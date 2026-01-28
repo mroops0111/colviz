@@ -1,0 +1,10 @@
+.DS_Store
+
+.vscode
+.cursor
+
+.next
+node_modules
+
+.env
+*.csv
