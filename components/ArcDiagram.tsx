@@ -6,13 +6,29 @@ import { Button } from "@/components/ui/button";
 import { CollaborationData } from "@/lib/types";
 import { processCollaborationData, getAllNodes, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
 
-const BEHAVIOR_ORDER = ["awareness", "sharing", "coordination", "collaboration"];
+const BEHAVIOR_ORDER = ["awareness", "sharing", "coordination", "improving"];
+
+export interface LinkClickEvent {
+  behavior: string;
+  fromId: string;
+  toId: string;
+  fromName: string;
+  toName: string;
+  count: number;
+}
+
+export interface BehaviorClickEvent {
+  behavior: string;
+}
 
 interface ArcDiagramProps {
   data: CollaborationData[];
+  showNames?: boolean; // true = show from/to names, false = show from_id/to_id only
+  onLinkClick?: (event: LinkClickEvent) => void;
+  onBehaviorDrilldown?: (event: BehaviorClickEvent) => void;
 }
 
-export default function ArcDiagram({ data }: ArcDiagramProps) {
+export default function ArcDiagram({ data, showNames = true, onLinkClick, onBehaviorDrilldown }: ArcDiagramProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedBehavior, setSelectedBehavior] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1000, height: 1000 });
@@ -80,6 +96,22 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
         idToName.set(row.to_id, row.to);
       }
     });
+
+    const nodeLabel = (id: string) => (showNames ? (idToName.get(id) ?? id) : id);
+    const linkTooltipLines = (sourceId: string, targetId: string, behavior: string, count: number) =>
+      showNames
+        ? [
+            `${idToName.get(sourceId) ?? sourceId} (${sourceId}) → ${idToName.get(targetId) ?? targetId} (${targetId})`,
+            `Behavior: ${behavior}`,
+            `Count: ${count}`,
+            "Click to view details",
+          ]
+        : [
+            `${sourceId} → ${targetId}`,
+            `Behavior: ${behavior}`,
+            `Count: ${count}`,
+            "Click to view details",
+          ];
 
     // Create SVG
     const svg = d3
@@ -228,6 +260,10 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
         .on("click", () => {
           setSelectedBehavior(selectedBehavior === behavior ? null : behavior);
         })
+        .on("dblclick", () => {
+          // Double-click for drill-down
+          onBehaviorDrilldown?.({ behavior });
+        })
         .on("mouseover", function () {
           d3.select(this).attr("opacity", 0.9);
         })
@@ -302,8 +338,20 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
           .style("pointer-events", "all")
           .style("cursor", "pointer");
 
-        // Add hover effect
+        // Add hover and click effects
         path
+          .on("click", function () {
+            const sourceName = idToName.get(link.source) || link.source;
+            const targetName = idToName.get(link.target) || link.target;
+            onLinkClick?.({
+              behavior: group.behavior,
+              fromId: link.source,
+              toId: link.target,
+              fromName: sourceName,
+              toName: targetName,
+              count: link.count,
+            });
+          })
           .on("mouseover", function () {
             d3.select(this)
               .attr("opacity", 0.8)
@@ -311,17 +359,7 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
           })
           .on("mousemove", function (event) {
             const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
-            const sourceName = idToName.get(link.source) || link.source;
-            const targetName = idToName.get(link.target) || link.target;
-            scheduleTooltip(
-              [
-                `${sourceName} (${link.source}) → ${targetName} (${link.target})`,
-                `Behavior: ${group.behavior}`,
-                `Count: ${link.count}`,
-              ],
-              x,
-              y
-            );
+            scheduleTooltip(linkTooltipLines(link.source, link.target, group.behavior, link.count), x, y);
           })
           .on("mouseout", function () {
             d3.select(this)
@@ -354,8 +392,8 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
         })
         .on("mousemove", function (event) {
           const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
-          const nodeName = idToName.get(node) || node;
-          scheduleTooltip([`${nodeName} (${node})`], x, y);
+          const line = showNames ? `${idToName.get(node) || node} (${node})` : node;
+          scheduleTooltip([line], x, y);
         })
         .on("mouseout", function () {
           d3.select(this).attr("r", 8).attr("stroke-width", 2);
@@ -376,10 +414,10 @@ export default function ArcDiagram({ data }: ArcDiagramProps) {
         .attr("fill", "#333")
         .attr("font-size", "11px")
         .style("pointer-events", "none")
-        .text(node);
+        .text(nodeLabel(node));
 
     });
-  }, [data, selectedBehavior, dimensions]);
+  }, [data, showNames, selectedBehavior, dimensions, onLinkClick, onBehaviorDrilldown]);
 
   const behaviors = [
     ...BEHAVIOR_ORDER.filter((behavior) => behavior in BEHAVIOR_COLORS),

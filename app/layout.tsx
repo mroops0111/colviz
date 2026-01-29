@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ColViz - Collaboration Visualization",
-  description: "Visualize collaboration data with arc diagrams",
+  description: "Visualize collaboration data with arc diagrams - behaviors: awareness, coordination, sharing, improving",
 };
 
 export default function RootLayout({
