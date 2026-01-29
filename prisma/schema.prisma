@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Dataset {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  actors       Actor[]
+  rawItems     RawItem[]
+  interactions Interaction[]
+
+  @@map("datasets")
+}
+
+model Source {
+  id          Int    @id @default(autoincrement())
+  key         String @unique
+  displayName String @map("display_name")
+
+  rawItems     RawItem[]
+  interactions Interaction[]
+
+  @@map("sources")
+}
+
+model Actor {
+  id             String   @id
+  datasetId      String   @map("dataset_id")
+  actorType      String   @map("actor_type")
+  actorKey       String   @map("actor_key")
+  name           String
+  attributesJson Json?    @map("attributes_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  dataset Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  authoredRawItems RawItem[]     @relation("AuthorActor")
+  fromInteractions Interaction[] @relation("FromActor")
+  toInteractions   Interaction[] @relation("ToActor")
+  teamInteractions Interaction[] @relation("TeamActor")
+
+  @@unique([datasetId, actorKey])
+  @@map("actors")
+}
+
+model RawItem {
+  id             String    @id @default(cuid())
+  datasetId      String    @map("dataset_id")
+  sourceId       Int       @map("source_id")
+  sourceItemType String    @map("source_item_type")
+  sourceItemId   String    @map("source_item_id")
+  occurredAt     DateTime? @map("occurred_at")
+
+  authorActorId String? @map("author_actor_id")
+  title         String?
+  contentText   String  @map("content_text")
+  contentFormat String  @default("plain") @map("content_format")
+  payloadJson   Json?   @map("payload_json")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dataset     Dataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  source      Source  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  authorActor Actor?  @relation("AuthorActor", fields: [authorActorId], references: [id], onDelete: SetNull)
+
+  interactions Interaction[]
+
+  @@unique([datasetId, sourceId, sourceItemType, sourceItemId])
+  @@index([datasetId, occurredAt])
+  @@map("raw_items")
+}
+
+model Interaction {
+  id         String   @id @default(cuid())
+  datasetId  String   @map("dataset_id")
+  rawItemId  String?  @map("raw_item_id")
+  sourceId   Int      @map("source_id")
+  occurredAt DateTime @map("occurred_at")
+  date       String
+  scope      String
+  behavior   String
+  weight     Int      @default(1)
+
+  teamId     String? @map("team_id")
+  fromActorId String @map("from_actor_id")
+  toActorId   String @map("to_actor_id")
+  attributesJson Json? @map("attributes_json")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  dataset Dataset  @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  source  Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  rawItem RawItem? @relation(fields: [rawItemId], references: [id], onDelete: SetNull)
+
+  team      Actor? @relation("TeamActor", fields: [teamId], references: [id], onDelete: SetNull)
+  fromActor Actor  @relation("FromActor", fields: [fromActorId], references: [id], onDelete: Cascade)
+  toActor   Actor  @relation("ToActor", fields: [toActorId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId, occurredAt])
+  @@index([datasetId, behavior, occurredAt])
+  @@index([datasetId, teamId, occurredAt])
+  @@index([datasetId, fromActorId, toActorId, behavior, occurredAt])
+  @@map("interactions")
+}

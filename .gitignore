@@ -1,10 +1,20 @@
+# macOS
 .DS_Store
 
+# IDE
 .vscode
 .cursor
 
+# Node.js
 .next
 node_modules
 
-.env
+# Database
+*.db
 *.csv
+
+# Environment variables
+.env
+
+# Local scripts
+scripts
