@@ -1,13 +1,25 @@
 "use client";
 
 import { useState, useMemo, useCallback, useEffect } from "react";
-import * as d3 from "d3";
-import ArcDiagram from "@/components/ArcDiagram";
+import ArcDiagram, { LinkClickEvent, BehaviorClickEvent } from "@/components/ArcDiagram";
 import TimeRangeFilter from "@/components/TimeRangeFilter";
 import TeamFilter from "@/components/TeamFilter";
 import SourceFilter from "@/components/SourceFilter";
+import EventDrawer from "@/components/EventDrawer";
 import { Card, CardContent } from "@/components/ui/card";
 import { CollaborationData } from "@/lib/types";
+
+interface DrilldownFilters {
+  behavior?: string;
+  from_id?: string;
+  to_id?: string;
+  from?: string;
+  to?: string;
+  sources?: string[];
+  teams?: string[];
+  start?: string;
+  end?: string;
+}
 
 export default function Home() {
   const [data, setData] = useState<CollaborationData[]>([]);
@@ -15,7 +27,12 @@ export default function Home() {
   const [selectedRange, setSelectedRange] = useState<[Date, Date] | null>(null);
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
+  const [showNames, setShowNames] = useState(true); // true = names (from/to), false = ids only
   const [error, setError] = useState<string | null>(null);
+
+  // Drill-down drawer state
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drilldownFilters, setDrilldownFilters] = useState<DrilldownFilters>({});
 
   // Compute filtered data based on date range and selected teams
   const filteredData = useMemo(() => {
@@ -26,9 +43,9 @@ export default function Home() {
       const inDateRange =
         date >= selectedRange[0] && date <= selectedRange[1];
       const inTeamFilter =
-        selectedTeams.size > 0 && selectedTeams.has(d.team_id);
+        selectedTeams.size === 0 || selectedTeams.has(d.team_id);
       const inSourceFilter =
-        selectedSources.size > 0 && selectedSources.has(d.source);
+        selectedSources.size === 0 || selectedSources.has(d.source);
       return inDateRange && inTeamFilter && inSourceFilter;
     });
   }, [data, selectedRange, selectedTeams, selectedSources]);
@@ -60,24 +77,13 @@ export default function Home() {
       setError(null);
 
       try {
-        const rows = await d3.csv("/sample/data.csv");
-        const parsed = rows.map((row) => ({
-          datetime: row.datetime ?? "",
-          date: row.date ?? "",
-          source: row.source ?? "",
-          stage: row.stage ?? "",
-          scope: row.scope ?? "",
-          team_id: row.team_id ?? "",
-          team: row.team ?? "",
-          behavior: row.behavior ?? "",
-          from_id: row.from_id ?? "",
-          from: row.from ?? "",
-          to_id: row.to_id ?? "",
-          to: row.to ?? "",
-        }));
+        const res = await fetch("/api/interactions?dataset=default");
+        if (!res.ok) throw new Error("Failed to load interactions from DB");
+        const json = (await res.json()) as { data?: CollaborationData[] };
+        const parsed = Array.isArray(json.data) ? json.data : [];
         handleDataLoaded(parsed);
       } catch (err) {
-        setError("Failed to load sample data");
+        setError("Failed to load data from local DB. Import data first, or check DB config.");
       }
     };
 
@@ -95,6 +101,46 @@ export default function Home() {
   const handleSourceFilterChange = useCallback((sources: Set<string>) => {
     setSelectedSources(sources);
   }, []);
+
+  // Build current drilldown filters from selected state
+  const buildDrilldownFilters = useCallback(
+    (extra: Partial<DrilldownFilters> = {}): DrilldownFilters => ({
+      sources: selectedSources.size > 0 ? Array.from(selectedSources) : undefined,
+      teams: selectedTeams.size > 0 ? Array.from(selectedTeams) : undefined,
+      start: selectedRange?.[0]?.toISOString(),
+      end: selectedRange?.[1]?.toISOString(),
+      ...extra,
+    }),
+    [selectedSources, selectedTeams, selectedRange]
+  );
+
+  const handleLinkClick = useCallback(
+    (event: LinkClickEvent) => {
+      setDrilldownFilters(
+        buildDrilldownFilters({
+          behavior: event.behavior,
+          from_id: event.fromId,
+          to_id: event.toId,
+          from: event.fromName,
+          to: event.toName,
+        })
+      );
+      setDrawerOpen(true);
+    },
+    [buildDrilldownFilters]
+  );
+
+  const handleBehaviorDrilldown = useCallback(
+    (event: BehaviorClickEvent) => {
+      setDrilldownFilters(
+        buildDrilldownFilters({
+          behavior: event.behavior,
+        })
+      );
+      setDrawerOpen(true);
+    },
+    [buildDrilldownFilters]
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/50">
@@ -146,17 +192,60 @@ export default function Home() {
                   />
                 </CardContent>
               </Card>
+
+              <Card>
+                <CardContent className="pt-5">
+                  <p className="text-sm font-medium mb-2">Display Label</p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowNames(true)}
+                      className={`flex-1 px-3 py-2 text-sm rounded-md border transition-colors ${
+                        showNames
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background border-input hover:bg-muted/50"
+                      }`}
+                    >
+                      Name
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNames(false)}
+                      className={`flex-1 px-3 py-2 text-sm rounded-md border transition-colors ${
+                        !showNames
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-background border-input hover:bg-muted/50"
+                      }`}
+                    >
+                      ID Only
+                    </button>
+                  </div>
+                </CardContent>
+              </Card>
             </aside>
 
             <Card className="h-full">
               <CardContent className="pt-6">
                 <div className="flex justify-center">
-                  <ArcDiagram data={filteredData} />
+                  <ArcDiagram
+                    data={filteredData}
+                    showNames={showNames}
+                    onLinkClick={handleLinkClick}
+                    onBehaviorDrilldown={handleBehaviorDrilldown}
+                  />
                 </div>
               </CardContent>
             </Card>
           </div>
         )}
+
+        <EventDrawer
+          open={drawerOpen}
+          onOpenChange={setDrawerOpen}
+          filters={drilldownFilters}
+          showNames={showNames}
+          datasetName="default"
+        />
       </div>
     </div>
   );

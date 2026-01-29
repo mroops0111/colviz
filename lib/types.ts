@@ -2,7 +2,6 @@ export interface CollaborationData {
   datetime: string;
   date: string;
   source: string;
-  stage: string;
   scope: string;
   team_id: string;
   team: string;
@@ -11,6 +10,7 @@ export interface CollaborationData {
   from: string;
   to_id: string;
   to: string;
+  weight?: number;
 }
 
 export interface ArcLink {
