@@ -3,7 +3,7 @@ import { CollaborationData, ArcLink, BehaviorGroup } from "./types";
 export const BEHAVIOR_COLORS: Record<string, string> = {
   coordination: "#4A90E2",
   sharing: "#50C878",
-  collaboration: "#F5A623",
+  improving: "#F5A623",
   awareness: "#9B59B6",
 };
 
@@ -21,20 +21,21 @@ export function processCollaborationData(data: CollaborationData[]): BehaviorGro
       behaviorMap.set(row.behavior, new Map());
     }
 
+    const weight = typeof row.weight === "number" && Number.isFinite(row.weight) ? row.weight : 1;
     const linkKey = `${row.from_id}-${row.to_id}`;
     const links = behaviorMap.get(row.behavior)!;
 
     if (links.has(linkKey)) {
       // Increment count for existing link
       const link = links.get(linkKey)!;
-      link.count++;
+      link.count += weight;
     } else {
       // Create new link
       links.set(linkKey, {
         source: row.from_id,
         target: row.to_id,
         behavior: row.behavior,
-        count: 1,
+        count: weight,
       });
     }
   });
