@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
+import { ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { CollaborationData } from "@/lib/types";
-import { processCollaborationData, getAllNodes, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
-
-const BEHAVIOR_ORDER = ["awareness", "sharing", "coordination", "improving"];
+import { processCollaborationData, getAllNodes, BEHAVIOR_COLORS, BEHAVIOR_ORDER, BEHAVIOR_BUTTON_LIST } from "@/lib/dataProcessor";
 
 export interface LinkClickEvent {
   behavior: string;
@@ -26,12 +26,42 @@ interface ArcDiagramProps {
   showNames?: boolean; // true = show from/to names, false = show from_id/to_id only
   onLinkClick?: (event: LinkClickEvent) => void;
   onBehaviorDrilldown?: (event: BehaviorClickEvent) => void;
+  /** When Event drawer closes, edge highlight is cleared */
+  eventDrawerOpen?: boolean;
 }
 
-export default function ArcDiagram({ data, showNames = true, onLinkClick, onBehaviorDrilldown }: ArcDiagramProps) {
+// Selected link key: behavior + from + to (persists highlight until another edge selected or cleared)
+function linkKey(behavior: string, source: string, target: string) {
+  return `${behavior}:${source}:${target}`;
+}
+
+type LinkInfo = {
+  group: { behavior: string; color: string };
+  link: { source: string; target: string; count: number };
+  fromName: string;
+  toName: string;
+};
+
+export default function ArcDiagram({ data, showNames = true, onLinkClick, onBehaviorDrilldown, eventDrawerOpen }: ArcDiagramProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const zoomTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const linkInfoByKeyRef = useRef<Map<string, LinkInfo>>(new Map());
+  const nodeEdgesRef = useRef<Map<string, string[]>>(new Map()); // nodeId → edge keys (source or target)
+  const hoveredLinkKeyRef = useRef<string | null>(null); // only one edge hovered at a time
   const [selectedBehavior, setSelectedBehavior] = useState<string | null>(null);
+  const [selectedLinkKey, setSelectedLinkKey] = useState<string | null>(null);
+  const [nodePopover, setNodePopover] = useState<{ keys: string[]; clientX: number; clientY: number } | null>(null);
   const [dimensions, setDimensions] = useState({ width: 1000, height: 1000 });
+  const prevDrawerOpen = useRef(eventDrawerOpen ?? false);
+
+  // Clear edge highlight when Event drawer is closed
+  useEffect(() => {
+    if (prevDrawerOpen.current && !eventDrawerOpen) {
+      setSelectedLinkKey(null);
+    }
+    prevDrawerOpen.current = eventDrawerOpen ?? false;
+  }, [eventDrawerOpen]);
 
   useEffect(() => {
     // Handle responsive sizing
@@ -120,8 +150,9 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
       .attr("height", height)
       .attr("viewBox", `0 0 ${width} ${height}`);
 
-    // Create main group
-    const g = svg.append("g").attr("transform", `translate(${centerX},${centerY})`);
+    // Zoom layer: content inside zoomG so zoom/pan applies to the diagram
+    const zoomG = svg.append("g").attr("class", "zoom-layer");
+    const g = zoomG.append("g").attr("transform", `translate(${centerX},${centerY})`);
 
     // Define arrow markers for each behavior color
     const defs = svg.append("defs");
@@ -227,15 +258,17 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
     const behaviorGroupMap = new Map(
       behaviorGroups.map((group) => [group.behavior, group])
     );
+    const orderList = BEHAVIOR_ORDER as readonly string[];
     const orderedBehaviors = [
       ...BEHAVIOR_ORDER.filter((behavior) => behaviorGroupMap.has(behavior)),
       ...behaviorGroups
         .map((group) => group.behavior)
-        .filter((behavior) => !BEHAVIOR_ORDER.includes(behavior)),
+        .filter((behavior) => !orderList.includes(behavior)),
     ];
     const behaviors = orderedBehaviors;
     const behaviorAngleStep = (2 * Math.PI) / behaviors.length;
 
+    // Draw each segment in BEHAVIOR_ORDER so index i = behaviors[i]; label and color must both use behaviors[i]
     behaviors.forEach((behavior, i) => {
       const startAngle = i * behaviorAngleStep - Math.PI / 2;
       const endAngle = (i + 1) * behaviorAngleStep - Math.PI / 2;
@@ -248,11 +281,13 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .endAngle(endAngle);
 
       const arcGroup = g.append("g").attr("class", `behavior-arc-${behavior}`);
+      // Use same color as link arcs (from processCollaborationData) so outer ring matches filter/diagram
+      const arcColor = behaviorGroupMap.get(behavior)?.color ?? BEHAVIOR_COLORS[behavior] ?? "#999999";
 
       arcGroup
         .append("path")
         .attr("d", arc as any)
-        .attr("fill", BEHAVIOR_COLORS[behavior] || "#999")
+        .attr("fill", arcColor)
         .attr("opacity", selectedBehavior === null || selectedBehavior === behavior ? 0.7 : 0.2)
         .attr("stroke", "#fff")
         .attr("stroke-width", 2)
@@ -261,7 +296,6 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
           setSelectedBehavior(selectedBehavior === behavior ? null : behavior);
         })
         .on("dblclick", () => {
-          // Double-click for drill-down
           onBehaviorDrilldown?.({ behavior });
         })
         .on("mouseover", function () {
@@ -271,8 +305,9 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
           d3.select(this).attr("opacity", selectedBehavior === null || selectedBehavior === behavior ? 0.7 : 0.2);
         });
 
-      // Add behavior label
-      const labelAngle = (startAngle + endAngle) / 2;
+      // Label: use same angle convention as d3.arc (it subtracts π/2 internally), so subtract π/2 for label position
+      const labelBehavior = behaviors[i];
+      const labelAngle = (startAngle + endAngle) / 2 - Math.PI / 2;
       const labelRadius = behaviorRadius + arcWidth + 14;
       const labelX = labelRadius * Math.cos(labelAngle);
       const labelY = labelRadius * Math.sin(labelAngle);
@@ -287,91 +322,164 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .attr("font-size", "12px")
         .attr("font-weight", 600)
         .style("pointer-events", "none")
-        .text(behavior);
+        .text(labelBehavior);
     });
 
-    // Draw links (arcs between nodes)
+    // Draw links: (1) visible paths, (2) nodes, (3) hit areas on top so they receive clicks and can raise on hover
     const linkGroup = g.append("g").attr("class", "links");
-
-    // Calculate offset for multiple behaviors on same link
     const behaviorIndex = new Map<string, number>();
     behaviors.forEach((b, i) => behaviorIndex.set(b, i));
 
+    type LinkItem = {
+      group: (typeof behaviorGroups)[0];
+      link: (typeof behaviorGroups)[0]["links"][0];
+      pathD: string;
+      key: string;
+      isSelected: boolean;
+      baseStrokeWidth: number;
+      hoverStrokeWidth: number;
+      baseOpacity: number;
+      selectedOpacity: number;
+      selectedStrokeWidth: number;
+    };
+    const linkItems: LinkItem[] = [];
+
     behaviorGroups.forEach((group) => {
       if (selectedBehavior !== null && selectedBehavior !== group.behavior) return;
-
       const behaviorOffset = behaviorIndex.get(group.behavior) || 0;
       const totalBehaviors = behaviors.length;
 
       group.links.forEach((link) => {
         const sourcePos = nodePositions.get(link.source);
         const targetPos = nodePositions.get(link.target);
-
         if (!sourcePos || !targetPos) return;
 
-        // Calculate arc path with offset for multiple behaviors
         const dx = targetPos.x - sourcePos.x;
         const dy = targetPos.y - sourcePos.y;
         const dr = Math.sqrt(dx * dx + dy * dy);
-        
-        // Add offset based on behavior index when showing all behaviors
         let offsetDr = dr;
         if (selectedBehavior === null && totalBehaviors > 1) {
-          // Offset each behavior slightly to make them visible
           const offsetFactor = 0.9 + (behaviorOffset * 0.05);
           offsetDr = dr * offsetFactor;
         }
 
+        const pathD = `M${sourcePos.x},${sourcePos.y}A${offsetDr},${offsetDr} 0 0,1 ${targetPos.x},${targetPos.y}`;
         const baseStrokeWidth = Math.max(1, Math.sqrt(link.count));
         const hoverStrokeWidth = Math.max(2, Math.sqrt(link.count) * 2);
+        const key = linkKey(group.behavior, link.source, link.target);
+        const isSelected = selectedLinkKey === key;
+        const baseOpacity = selectedBehavior === null ? 0.2 : 0.4;
+        const selectedOpacity = 0.95;
+        const selectedStrokeWidth = Math.max(hoverStrokeWidth, 4);
 
-        // Create curved path
-        const path = linkGroup
-          .append("path")
-          .attr("class", `link link-${group.behavior}`)
-          .attr("d", `M${sourcePos.x},${sourcePos.y}A${offsetDr},${offsetDr} 0 0,1 ${targetPos.x},${targetPos.y}`)
-          .attr("fill", "none")
-          .attr("stroke", group.color)
-          .attr("stroke-width", baseStrokeWidth)
-          .attr("opacity", selectedBehavior === null ? 0.2 : 0.4)
-          .attr("marker-end", `url(#arrow-${group.behavior})`)
-          .style("pointer-events", "all")
-          .style("cursor", "pointer");
-
-        // Add hover and click effects
-        path
-          .on("click", function () {
-            const sourceName = idToName.get(link.source) || link.source;
-            const targetName = idToName.get(link.target) || link.target;
-            onLinkClick?.({
-              behavior: group.behavior,
-              fromId: link.source,
-              toId: link.target,
-              fromName: sourceName,
-              toName: targetName,
-              count: link.count,
-            });
-          })
-          .on("mouseover", function () {
-            d3.select(this)
-              .attr("opacity", 0.8)
-              .attr("stroke-width", hoverStrokeWidth);
-          })
-          .on("mousemove", function (event) {
-            const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
-            scheduleTooltip(linkTooltipLines(link.source, link.target, group.behavior, link.count), x, y);
-          })
-          .on("mouseout", function () {
-            d3.select(this)
-              .attr("opacity", selectedBehavior === null ? 0.2 : 0.4)
-              .attr("stroke-width", baseStrokeWidth);
-            hideTooltip();
-          })
-          .on("mouseleave", hideTooltip);
+        linkItems.push({
+          group,
+          link,
+          pathD,
+          key,
+          isSelected,
+          baseStrokeWidth,
+          hoverStrokeWidth,
+          baseOpacity,
+          selectedOpacity,
+          selectedStrokeWidth,
+        });
       });
     });
 
-    // Draw nodes
+    const sortedItems = [...linkItems].sort((a, b) => (a.isSelected ? 1 : 0) - (b.isSelected ? 1 : 0));
+
+    // Build nodeId → edge keys (edges where node is source or target)
+    nodeEdgesRef.current.clear();
+    sortedItems.forEach(({ link, key }) => {
+      const add = (n: string) => {
+        if (!nodeEdgesRef.current.has(n)) nodeEdgesRef.current.set(n, []);
+        nodeEdgesRef.current.get(n)!.push(key);
+      };
+      add(link.source);
+      add(link.target);
+    });
+
+    // Layer 1: visible link paths only (pointer-events: none)
+    sortedItems.forEach(({ group, link, pathD, key, isSelected, baseStrokeWidth, baseOpacity, selectedOpacity, selectedStrokeWidth }) => {
+      const linkG = linkGroup.append("g").attr("class", `link-group link-${group.behavior}`).attr("data-link-key", key).style("pointer-events", "none");
+      linkG
+        .append("path")
+        .attr("class", "link-visible")
+        .attr("d", pathD)
+        .attr("fill", "none")
+        .attr("stroke", group.color)
+        .attr("stroke-width", isSelected ? selectedStrokeWidth : baseStrokeWidth)
+        .attr("opacity", isSelected ? selectedOpacity : baseOpacity)
+        .attr("marker-end", `url(#arrow-${group.behavior})`);
+    });
+
+    // Layer 2: link hit areas (edge click = only that edge; raise on hover)
+    const hitStrokeWidth = 36;
+    const linkHitGroup = g.append("g").attr("class", "link-hits");
+    const updateVisibleByKey = (linkKeyVal: string, opacity: number, strokeW: number) => {
+      linkGroup.select(`g[data-link-key="${linkKeyVal}"] .link-visible`).attr("opacity", opacity).attr("stroke-width", strokeW);
+    };
+    // Reset all edges to correct style so only one is hovered at a time (fix fast mouse movement)
+    const syncAllLinkStyles = (hoveredKey: string | null) => {
+      hoveredLinkKeyRef.current = hoveredKey;
+      sortedItems.forEach(({ key: k, isSelected, baseOpacity, baseStrokeWidth, hoverStrokeWidth, selectedOpacity, selectedStrokeWidth }) => {
+        if (isSelected) updateVisibleByKey(k, selectedOpacity, selectedStrokeWidth);
+        else if (k === hoveredKey) updateVisibleByKey(k, 0.8, hoverStrokeWidth);
+        else updateVisibleByKey(k, baseOpacity, baseStrokeWidth);
+      });
+    };
+
+    sortedItems.forEach(({ group, link, pathD, key, isSelected, baseStrokeWidth, hoverStrokeWidth, baseOpacity, selectedOpacity, selectedStrokeWidth }) => {
+      const fromName = idToName.get(link.source) ?? link.source;
+      const toName = idToName.get(link.target) ?? link.target;
+      linkInfoByKeyRef.current.set(key, { group, link, fromName, toName });
+
+      const hitG = linkHitGroup
+        .append("g")
+        .attr("class", `link-hit-group link-${group.behavior}`)
+        .attr("data-link-key", key)
+        .style("cursor", "pointer");
+
+      hitG
+        .append("path")
+        .attr("class", "link-hit")
+        .attr("d", pathD)
+        .attr("fill", "none")
+        .attr("stroke", "transparent")
+        .attr("stroke-width", hitStrokeWidth)
+        .style("pointer-events", "all");
+
+      hitG
+        .on("click", function () {
+          const sourceName = idToName.get(link.source) || link.source;
+          const targetName = idToName.get(link.target) || link.target;
+          setSelectedLinkKey((prev) => (prev === key ? null : key));
+          onLinkClick?.({
+            behavior: group.behavior,
+            fromId: link.source,
+            toId: link.target,
+            fromName: sourceName,
+            toName: targetName,
+            count: link.count,
+          });
+        })
+        .on("mouseover", function () {
+          hitG.raise(); // bring this edge's hit area to front so overlapping edges can be hovered/clicked
+          syncAllLinkStyles(key); // ensure only this edge is hovered (fix fast mouse movement)
+        })
+        .on("mousemove", function (event) {
+          const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
+          scheduleTooltip(linkTooltipLines(link.source, link.target, group.behavior, link.count), x, y);
+        })
+        .on("mouseout", function () {
+          syncAllLinkStyles(null); // clear hover for all
+          hideTooltip();
+        })
+        .on("mouseleave", hideTooltip);
+    });
+
+    // Layer 3: nodes on top so node click opens popover (edge click only when clicking on edge, not node)
     const nodeGroup = g.append("g").attr("class", "nodes");
 
     allNodes.forEach((node) => {
@@ -379,7 +487,7 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
 
       const nodeG = nodeGroup.append("g").attr("transform", `translate(${pos.x},${pos.y})`);
 
-      // Node circle
+      // Node circle: click opens popover only when node has multiple edges; single edge = select directly
       nodeG
         .append("circle")
         .attr("r", 8)
@@ -387,6 +495,27 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .attr("stroke", "#4A90E2")
         .attr("stroke-width", 2)
         .style("cursor", "pointer")
+        .on("click", function (event: MouseEvent) {
+          const keys = nodeEdgesRef.current.get(node) ?? [];
+          if (keys.length === 0) return;
+          if (keys.length === 1) {
+            const key = keys[0];
+            const info = linkInfoByKeyRef.current.get(key);
+            if (info) {
+              setSelectedLinkKey((prev) => (prev === key ? null : key));
+              onLinkClick?.({
+                behavior: info.group.behavior,
+                fromId: info.link.source,
+                toId: info.link.target,
+                fromName: info.fromName,
+                toName: info.toName,
+                count: info.link.count,
+              });
+            }
+            return;
+          }
+          setNodePopover({ keys, clientX: event.clientX, clientY: event.clientY });
+        })
         .on("mouseover", function () {
           d3.select(this).attr("r", 12).attr("stroke-width", 3);
         })
@@ -417,14 +546,67 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .text(nodeLabel(node));
 
     });
-  }, [data, showNames, selectedBehavior, dimensions, onLinkClick, onBehaviorDrilldown]);
 
-  const behaviors = [
-    ...BEHAVIOR_ORDER.filter((behavior) => behavior in BEHAVIOR_COLORS),
-    ...Object.keys(BEHAVIOR_COLORS).filter(
-      (behavior) => !BEHAVIOR_ORDER.includes(behavior)
-    ),
-  ];
+    // Zoom and pan: clamp translate so diagram cannot be dragged off-screen; when zoomed in, allow pan within overlap
+    const contentRadius = radius + 80;
+    const zoomBehavior = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([1, 4])
+      .on("zoom", (event) => {
+        const k = event.transform.k;
+        let tx = event.transform.x;
+        let ty = event.transform.y;
+        const contentW = 2 * contentRadius * k;
+        const contentH = 2 * contentRadius * k;
+        let minX: number, maxX: number, minY: number, maxY: number;
+        if (contentW <= width && contentH <= height) {
+          // Content fits: keep it fully inside viewport
+          minX = k * (contentRadius - centerX);
+          maxX = width - k * (centerX + contentRadius);
+          minY = k * (contentRadius - centerY);
+          maxY = height - k * (centerY + contentRadius);
+        } else {
+          // Content larger than viewport: allow pan so it can overlap viewport (no full escape)
+          minX = -k * (centerX + contentRadius);
+          maxX = width - k * (centerX - contentRadius);
+          minY = -k * (centerY + contentRadius);
+          maxY = height - k * (centerY - contentRadius);
+        }
+        tx = Math.min(Math.max(tx, minX), maxX);
+        ty = Math.min(Math.max(ty, minY), maxY);
+        const clamped = d3.zoomIdentity.translate(tx, ty).scale(k);
+        zoomTransformRef.current = clamped;
+        zoomG.attr("transform", clamped.toString());
+        if (tx !== event.transform.x || ty !== event.transform.y) {
+          svg.call(zoomBehavior.transform, clamped);
+        }
+      });
+    zoomBehaviorRef.current = zoomBehavior;
+    svg.call(zoomBehavior);
+    if (zoomTransformRef.current) {
+      const t = zoomTransformRef.current;
+      const k = t.k;
+      const contentW = 2 * contentRadius * k;
+      const contentH = 2 * contentRadius * k;
+      let minX: number, maxX: number, minY: number, maxY: number;
+      if (contentW <= width && contentH <= height) {
+        minX = k * (contentRadius - centerX);
+        maxX = width - k * (centerX + contentRadius);
+        minY = k * (contentRadius - centerY);
+        maxY = height - k * (centerY + contentRadius);
+      } else {
+        minX = -k * (centerX + contentRadius);
+        maxX = width - k * (centerX - contentRadius);
+        minY = -k * (centerY + contentRadius);
+        maxY = height - k * (centerY - contentRadius);
+      }
+      const tx = Math.min(Math.max(t.x, minX), maxX);
+      const ty = Math.min(Math.max(t.y, minY), maxY);
+      const clamped = d3.zoomIdentity.translate(tx, ty).scale(k);
+      zoomTransformRef.current = clamped;
+      svg.call(zoomBehavior.transform, clamped);
+    }
+  }, [data, showNames, selectedBehavior, selectedLinkKey, dimensions, onLinkClick, onBehaviorDrilldown]);
 
   return (
     <div className="space-y-4">
@@ -436,7 +618,7 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         >
           All
         </Button>
-        {behaviors.map((behavior) => (
+        {BEHAVIOR_BUTTON_LIST.map((behavior) => (
           <Button
             key={behavior}
             onClick={() => setSelectedBehavior(selectedBehavior === behavior ? null : behavior)}
@@ -445,20 +627,134 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
             className="gap-2"
           >
             <div
-              className="w-3 h-3 rounded-full"
-              style={{ backgroundColor: BEHAVIOR_COLORS[behavior] }}
+              className="w-3 h-3 shrink-0 rounded-full border border-white/80 shadow-sm"
+              style={{ backgroundColor: BEHAVIOR_COLORS[behavior] ?? "#999999" }}
+              aria-hidden
             />
             <span className="capitalize">{behavior}</span>
           </Button>
         ))}
       </div>
 
-      <div className="flex justify-center bg-muted/50 rounded-lg p-4">
+      <div className="relative flex justify-center bg-muted/50 rounded-lg p-4">
+        {nodePopover && (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              aria-hidden
+              onClick={() => setNodePopover(null)}
+            />
+            <div
+              className="fixed z-50 w-96 rounded-lg border bg-popover text-popover-foreground shadow-lg ring-1 ring-border/50"
+              style={{
+                left: Math.min(nodePopover.clientX + 8, typeof window !== "undefined" ? window.innerWidth - 400 : nodePopover.clientX + 8),
+                top: Math.min(nodePopover.clientY + 8, typeof window !== "undefined" ? window.innerHeight - 280 : nodePopover.clientY + 8),
+              }}
+              role="dialog"
+              aria-label="Choose edge"
+            >
+              <div className="border-b border-border/50 px-3 py-2.5">
+                <p className="text-sm font-medium text-foreground">
+                  Choose an edge
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Select one to view details
+                </p>
+              </div>
+              <ScrollArea className="h-[240px] overflow-hidden rounded-b-lg">
+                <ul className="p-2">
+                  {[...nodePopover.keys]
+                    .sort((a, b) => {
+                      const infoA = linkInfoByKeyRef.current.get(a);
+                      const infoB = linkInfoByKeyRef.current.get(b);
+                      const idxA = infoA ? (BEHAVIOR_ORDER as readonly string[]).indexOf(infoA.group.behavior) : -1;
+                      const idxB = infoB ? (BEHAVIOR_ORDER as readonly string[]).indexOf(infoB.group.behavior) : -1;
+                      if (idxA !== idxB) return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+                      return a.localeCompare(b);
+                    })
+                    .map((key) => {
+                    const info = linkInfoByKeyRef.current.get(key);
+                    if (!info) return null;
+                    const label = showNames
+                      ? `${info.fromName} → ${info.toName}`
+                      : `${info.link.source} → ${info.link.target}`;
+                    const behaviorLabel = info.group.behavior;
+                    const color = info.group.color;
+                    return (
+                      <li key={key}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                          onClick={() => {
+                            setSelectedLinkKey(key);
+                            onLinkClick?.({
+                              behavior: info.group.behavior,
+                              fromId: info.link.source,
+                              toId: info.link.target,
+                              fromName: info.fromName,
+                              toName: info.toName,
+                              count: info.link.count,
+                            });
+                            setNodePopover(null);
+                          }}
+                        >
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: color }}
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1 truncate font-medium">
+                            {label}
+                          </span>
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {behaviorLabel}
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            ×{info.link.count}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </ScrollArea>
+            </div>
+          </>
+        )}
         <svg ref={svgRef} className="max-w-full h-auto" />
+        <div className="absolute top-2 right-2 flex gap-1">
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-8 w-8 shrink-0 rounded-md shadow"
+            onClick={() => {
+              if (svgRef.current && zoomBehaviorRef.current) {
+                d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.2);
+              }
+            }}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-8 w-8 shrink-0 rounded-md shadow"
+            onClick={() => {
+              if (svgRef.current && zoomBehaviorRef.current) {
+                d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 0.8);
+              }
+            }}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
       <div className="text-sm text-muted-foreground space-y-1">
-        <p>💡 Tip: Click on the outer behavior arcs or buttons to view specific behavior links</p>
         <p>Total records: {data.length}</p>
       </div>
     </div>

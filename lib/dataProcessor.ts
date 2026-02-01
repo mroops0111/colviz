@@ -1,11 +1,21 @@
 import { CollaborationData, ArcLink, BehaviorGroup } from "./types";
 
+// Order used by filter buttons and arc diagram outer ring (awareness → sharing → coordination → improving)
+export const BEHAVIOR_ORDER = ["awareness", "sharing", "coordination", "improving"] as const;
+
 export const BEHAVIOR_COLORS: Record<string, string> = {
-  coordination: "#4A90E2",
-  sharing: "#50C878",
-  improving: "#F5A623",
   awareness: "#9B59B6",
+  sharing: "#50C878",
+  coordination: "#4A90E2",
+  improving: "#F5A623",
 };
+
+/** Ordered list of behaviors for filter buttons (BEHAVIOR_ORDER first, then any extra from BEHAVIOR_COLORS) */
+const orderSet = new Set<string>(BEHAVIOR_ORDER);
+export const BEHAVIOR_BUTTON_LIST: string[] = [
+  ...BEHAVIOR_ORDER.filter((b) => b in BEHAVIOR_COLORS),
+  ...Object.keys(BEHAVIOR_COLORS).filter((b) => !orderSet.has(b)),
+];
 
 /**
  * Process collaboration data into behavior groups with aggregated links

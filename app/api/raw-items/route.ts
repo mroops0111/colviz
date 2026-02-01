@@ -1,27 +1,19 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { parseCsvList, parseOptionalDate } from "@/lib/api-utils";
 
 export const runtime = "nodejs";
-
-function parseCsvList(value: string | null): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const datasetName = url.searchParams.get("dataset")?.trim() || "default";
 
-  // Filters
   const sources = parseCsvList(url.searchParams.get("sources"));
   const sourceItemTypes = parseCsvList(url.searchParams.get("types"));
   const search = url.searchParams.get("q")?.trim() || null;
-
-  const start = url.searchParams.get("start");
-  const end = url.searchParams.get("end");
+  const start = parseOptionalDate(url.searchParams.get("start"));
+  const end = parseOptionalDate(url.searchParams.get("end"));
 
   // Pagination
   const limit = Math.min(
@@ -42,17 +34,11 @@ export async function GET(request: Request) {
   }
 
   const occurredAtFilter: { gte?: Date; lte?: Date } = {};
-  if (start) {
-    const d = new Date(start);
-    if (!Number.isNaN(d.getTime())) occurredAtFilter.gte = d;
-  }
-  if (end) {
-    const d = new Date(end);
-    if (!Number.isNaN(d.getTime())) occurredAtFilter.lte = d;
-  }
+  if (start) occurredAtFilter.gte = start;
+  if (end) occurredAtFilter.lte = end;
 
   // Build where clause
-  const where: Parameters<typeof prisma.rawItem.findMany>[0]["where"] = {
+  const where: Prisma.RawItemWhereInput = {
     datasetId: dataset.id,
     ...(Object.keys(occurredAtFilter).length > 0
       ? { occurredAt: occurredAtFilter }

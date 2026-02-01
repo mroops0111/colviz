@@ -7,19 +7,7 @@ import TeamFilter from "@/components/TeamFilter";
 import SourceFilter from "@/components/SourceFilter";
 import EventDrawer from "@/components/EventDrawer";
 import { Card, CardContent } from "@/components/ui/card";
-import { CollaborationData } from "@/lib/types";
-
-interface DrilldownFilters {
-  behavior?: string;
-  from_id?: string;
-  to_id?: string;
-  from?: string;
-  to?: string;
-  sources?: string[];
-  teams?: string[];
-  start?: string;
-  end?: string;
-}
+import { CollaborationData, DrilldownFilters } from "@/lib/types";
 
 export default function Home() {
   const [data, setData] = useState<CollaborationData[]>([]);
@@ -224,7 +212,7 @@ export default function Home() {
               </Card>
             </aside>
 
-            <Card className="h-full">
+            <Card className="h-full min-w-0">
               <CardContent className="pt-6">
                 <div className="flex justify-center">
                   <ArcDiagram
@@ -232,6 +220,7 @@ export default function Home() {
                     showNames={showNames}
                     onLinkClick={handleLinkClick}
                     onBehaviorDrilldown={handleBehaviorDrilldown}
+                    eventDrawerOpen={drawerOpen}
                   />
                 </div>
               </CardContent>
