@@ -6,7 +6,7 @@ import {
 import { NextRequest } from "next/server";
 
 const serviceAdapter = new OpenAIAdapter({
-  model: 'gpt-4o-mini',
+  model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   disableParallelToolCalls: true,
 });
 const runtime = new CopilotRuntime();

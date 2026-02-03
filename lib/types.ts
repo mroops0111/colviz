@@ -26,6 +26,14 @@ export interface BehaviorGroup {
   color: string;
 }
 
+/** Context exposed to Copilot via useCopilotReadable for tool parameter validation and hints */
+export interface ProjectContext {
+  sources: string[];
+  teams: { id: string; name: string }[];
+  members: { id: string; name: string }[];
+  behaviors: string[];
+}
+
 /** Drilldown / EventDrawer filter params (query and API) */
 export interface DrilldownFilters {
   behavior?: string;

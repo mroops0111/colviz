@@ -6,6 +6,7 @@
 .cursor
 
 # Node.js
+*.tsbuildinfo
 .next
 .pnpm-store
 node_modules

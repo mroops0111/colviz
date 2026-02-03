@@ -37,15 +37,15 @@ export async function GET(request: Request) {
   const interactions = await prisma.interaction.findMany({
     where,
     orderBy: { occurredAt: "asc" },
-      include: {
-        source: true,
-        fromActor: true,
-        toActor: true,
-        team: true,
-      },
+    include: {
+      source: true,
+      fromActor: true,
+      toActor: true,
+      team: true,
+    },
   });
 
-  const data = interactions.map((it) => ({
+  const data = interactions.map((it: typeof interactions[number]) => ({
     datetime: it.occurredAt.toISOString(),
     date: it.date,
     source: it.source.key,

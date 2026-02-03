@@ -35,11 +35,39 @@ function formatPayloadValue(value: unknown): string {
   return String(value);
 }
 
+function RawPayloadDetails({ payload }: { payload: Record<string, unknown> }) {
+  const displayKeys = Object.keys(payload).filter((k) => !PAYLOAD_SKIP_KEYS.includes(k));
+  const nonEmptyKeys = displayKeys.filter((key) => {
+    const value = payload[key];
+    return value !== undefined && value !== "" && !(Array.isArray(value) && value.length === 0);
+  });
+  return (
+    <details className="text-xs border rounded-lg">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground p-2 hover:bg-muted/30">
+        📋 View Raw Data
+      </summary>
+      <div className="p-3 border-t space-y-2 max-h-64 overflow-y-auto">
+        <div className="space-y-1">
+          {nonEmptyKeys.map((key) => (
+            <div key={key} className="flex gap-2 text-[10px]">
+              <span className="font-medium text-muted-foreground min-w-32">{key}:</span>
+              <span className="flex-1 break-words">{formatPayloadValue(payload[key])}</span>
+            </div>
+          ))}
+          {nonEmptyKeys.length === 0 && (
+            <div className="text-muted-foreground text-[10px] italic">No additional data</div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+}
+
 interface EventDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   filters: DrilldownFilters;
-  showNames?: boolean; // true = show from/to names, false = show from_id/to_id only
+  showNames?: boolean;
   datasetName?: string;
 }
 
@@ -231,32 +259,7 @@ export default function EventDrawer({
                           )}
                           {(() => {
                             const payload = getPayloadObj(event.rawItem.payload);
-                            if (!payload) return null;
-                            const displayKeys = Object.keys(payload).filter((k) => !PAYLOAD_SKIP_KEYS.includes(k));
-                            const nonEmptyKeys = displayKeys.filter((key) => {
-                              const value = payload[key];
-                              return value !== undefined && value !== "" && !(Array.isArray(value) && value.length === 0);
-                            });
-                            return (
-                              <details className="text-xs border rounded-lg">
-                                <summary className="cursor-pointer text-muted-foreground hover:text-foreground p-2 hover:bg-muted/30">
-                                  📋 View Raw Data
-                                </summary>
-                                <div className="p-3 border-t space-y-2 max-h-64 overflow-y-auto">
-                                  <div className="space-y-1">
-                                    {nonEmptyKeys.map((key) => (
-                                      <div key={key} className="flex gap-2 text-[10px]">
-                                        <span className="font-medium text-muted-foreground min-w-32">{key}:</span>
-                                        <span className="flex-1 break-words">{formatPayloadValue(payload[key])}</span>
-                                      </div>
-                                    ))}
-                                    {nonEmptyKeys.length === 0 && (
-                                      <div className="text-muted-foreground text-[10px] italic">No additional data</div>
-                                    )}
-                                  </div>
-                                </div>
-                              </details>
-                            );
+                            return payload ? <RawPayloadDetails payload={payload} /> : null;
                           })()}
                         </div>
                       ) : (
