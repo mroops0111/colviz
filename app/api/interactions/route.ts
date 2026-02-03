@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db";
-import { parseCsvList, parseOptionalDate } from "@/lib/api-utils";
+import { prisma } from "../../../lib/db";
+import { parseCsvList, parseOptionalDate } from "../../../lib/api-utils";
 
 export const runtime = "nodejs";
 
@@ -45,7 +45,7 @@ export async function GET(request: Request) {
     },
   });
 
-  const data = interactions.map((it: typeof interactions[number]) => ({
+  const data = interactions.map((it) => ({
     datetime: it.occurredAt.toISOString(),
     date: it.date,
     source: it.source.key,
