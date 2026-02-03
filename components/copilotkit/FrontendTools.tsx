@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useCopilotReadable, useFrontendTool } from "@copilotkit/react-core";
 import type { Parameter } from "@copilotkit/shared";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
-import { BEHAVIOR_ORDER } from "@/lib/dataProcessor";
-import type { ProjectContext } from "@/lib/types";
+import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
+import type { ProjectContext } from "../../lib/types";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 import type { ToolStatus } from "./ToolExecutionCard";
 
@@ -58,8 +58,8 @@ function buildInteractionSummaryUrl(args: Record<string, unknown>): string {
 
 const getInteractionEventsParameters: Parameter[] = [
   { name: "behavior", type: "string", description: "One of: " + BEHAVIOR_ORDER.join(", "), required: true },
-  { name: "from_id", type: "string", description: "Member ID", required: true },
-  { name: "to_id", type: "string", description: "Member ID", required: true },
+  { name: "from_id", type: "string", description: "Member ID (e.g., M1)", required: true },
+  { name: "to_id", type: "string", description: "Member ID (e.g., M2)", required: true },
   { name: "start", type: "string", description: "Start date (ISO)", required: false },
   { name: "end", type: "string", description: "End date (ISO)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },

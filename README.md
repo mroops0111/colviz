@@ -4,9 +4,7 @@ A visualization tool for analyzing and improving collaboration behaviors in agil
 
 ## Context
 
-Agile collaboration can be characterized by four core behaviors: **awareness**, **sharing**, **coordination**, and **improving**. Individual developers exhibit different levels of capability in performing these behaviors. To achieve effective collaboration, managers compose teams by combining developers with complementary capability profiles, tailored to specific team structures and project goals. This applies to both intra-team and inter-team collaboration scenarios.
-
-Collaboration quality is assessed through **congruence**, which represents the degree of alignment between required collaboration behaviors and the behaviors actually enacted by the team.
+Agile collaboration can be characterized by four core behaviors: **awareness**, **sharing**, **coordination**, and **improving**. Developers exhibit varying levels of capability in performing these behaviors, and effective collaboration is achieved when managers compose teams by combining complementary capability profiles in accordance with specific team structures and project goals. Applicable to both intra-team and inter-team contexts, collaboration quality is assessed through congruence, defined as the degree of alignment between required collaboration behaviors and the behaviors actually enacted by the team.
 
 ## Features
 
