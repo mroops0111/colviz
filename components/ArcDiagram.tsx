@@ -1,12 +1,21 @@
 "use client";
 
+/**
+ * Arc diagram: nodes on a circle, links as arcs, behavior ring.
+ * Supports zoom/pan, link/behavior drilldown, and node popover for multi-edge selection.
+ */
+
 import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
+import { ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { CollaborationData } from "@/lib/types";
-import { processCollaborationData, getAllNodes, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
+import { processCollaborationData, getAllNodes, BEHAVIOR_COLORS, BEHAVIOR_ORDER, BEHAVIOR_BUTTON_LIST } from "@/lib/dataProcessor";
 
-const BEHAVIOR_ORDER = ["awareness", "sharing", "coordination", "improving"];
+// Fixed diagram size for viewBox - actual size controlled by CSS
+const SIZE = 800;
+const MARGIN = 100;
 
 export interface LinkClickEvent {
   behavior: string;
@@ -23,51 +32,55 @@ export interface BehaviorClickEvent {
 
 interface ArcDiagramProps {
   data: CollaborationData[];
-  showNames?: boolean; // true = show from/to names, false = show from_id/to_id only
+  showNames?: boolean;
   onLinkClick?: (event: LinkClickEvent) => void;
   onBehaviorDrilldown?: (event: BehaviorClickEvent) => void;
+  eventDrawerOpen?: boolean;
 }
 
-export default function ArcDiagram({ data, showNames = true, onLinkClick, onBehaviorDrilldown }: ArcDiagramProps) {
+type LinkInfo = {
+  group: { behavior: string; color: string };
+  link: { source: string; target: string; count: number };
+  fromName: string;
+  toName: string;
+};
+
+function linkKey(behavior: string, source: string, target: string) {
+  return `${behavior}:${source}:${target}`;
+}
+
+export default function ArcDiagram({ data, showNames = true, onLinkClick, onBehaviorDrilldown, eventDrawerOpen }: ArcDiagramProps) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const zoomTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const linkInfoByKeyRef = useRef<Map<string, LinkInfo>>(new Map());
+  const nodeEdgesRef = useRef<Map<string, string[]>>(new Map());
   const [selectedBehavior, setSelectedBehavior] = useState<string | null>(null);
-  const [dimensions, setDimensions] = useState({ width: 1000, height: 1000 });
+  const [selectedLinkKey, setSelectedLinkKey] = useState<string | null>(null);
+  const [nodePopover, setNodePopover] = useState<{ keys: string[]; clientX: number; clientY: number } | null>(null);
+  const prevDrawerOpen = useRef(eventDrawerOpen ?? false);
 
+  // Clear edge highlight when Event drawer is closed
   useEffect(() => {
-    // Handle responsive sizing
-    const handleResize = () => {
-      if (svgRef.current) {
-        const container = svgRef.current.parentElement;
-        if (container) {
-          const width = Math.min(container.clientWidth, 1200);
-          const height = width;
-          setDimensions({ width, height });
-        }
-      }
-    };
-
-    handleResize();
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
+    if (prevDrawerOpen.current && !eventDrawerOpen) {
+      setSelectedLinkKey(null);
+    }
+    prevDrawerOpen.current = eventDrawerOpen ?? false;
+  }, [eventDrawerOpen]);
 
   useEffect(() => {
     if (!svgRef.current) return;
 
-    // Clear previous content
-    d3.select(svgRef.current).selectAll("*").remove();
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+    svg.attr("viewBox", `0 0 ${SIZE} ${SIZE}`).attr("preserveAspectRatio", "xMidYMid meet");
 
+    // Empty state
     if (data.length === 0) {
-      const svg = d3
-        .select(svgRef.current)
-        .attr("width", dimensions.width)
-        .attr("height", dimensions.height)
-        .attr("viewBox", `0 0 ${dimensions.width} ${dimensions.height}`);
-
       svg
         .append("text")
-        .attr("x", dimensions.width / 2)
-        .attr("y", dimensions.height / 2)
+        .attr("x", SIZE / 2)
+        .attr("y", SIZE / 2)
         .attr("text-anchor", "middle")
         .attr("dominant-baseline", "middle")
         .attr("fill", "#64748b")
@@ -76,211 +89,116 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
       return;
     }
 
-    const { width, height } = dimensions;
-    const margin = 80;
-    const radius = Math.min(width, height) / 2 - margin;
-    const centerX = width / 2;
-    const centerY = height / 2;
+    const centerX = SIZE / 2;
+    const centerY = SIZE / 2;
+    const radius = SIZE / 2 - MARGIN;
 
     // Process data
     const behaviorGroups = processCollaborationData(data);
     const allNodes = Array.from(getAllNodes(data));
     const nodeCount = allNodes.length;
-    const idToName = new Map<string, string>();
 
+    // Build id → name map
+    const idToName = new Map<string, string>();
     data.forEach((row) => {
-      if (!idToName.has(row.from_id)) {
-        idToName.set(row.from_id, row.from);
-      }
-      if (!idToName.has(row.to_id)) {
-        idToName.set(row.to_id, row.to);
-      }
+      if (!idToName.has(row.from_id)) idToName.set(row.from_id, row.from);
+      if (!idToName.has(row.to_id)) idToName.set(row.to_id, row.to);
     });
 
     const nodeLabel = (id: string) => (showNames ? (idToName.get(id) ?? id) : id);
-    const linkTooltipLines = (sourceId: string, targetId: string, behavior: string, count: number) =>
-      showNames
-        ? [
-            `${idToName.get(sourceId) ?? sourceId} (${sourceId}) → ${idToName.get(targetId) ?? targetId} (${targetId})`,
-            `Behavior: ${behavior}`,
-            `Count: ${count}`,
-            "Click to view details",
-          ]
-        : [
-            `${sourceId} → ${targetId}`,
-            `Behavior: ${behavior}`,
-            `Count: ${count}`,
-            "Click to view details",
-          ];
 
-    // Create SVG
-    const svg = d3
-      .select(svgRef.current)
-      .attr("width", width)
-      .attr("height", height)
-      .attr("viewBox", `0 0 ${width} ${height}`);
+    // Zoom layer
+    const zoomG = svg.append("g").attr("class", "zoom-layer");
+    const g = zoomG.append("g").attr("transform", `translate(${centerX},${centerY})`);
 
-    // Create main group
-    const g = svg.append("g").attr("transform", `translate(${centerX},${centerY})`);
-
-    // Define arrow markers for each behavior color
+    // Arrow markers
     const defs = svg.append("defs");
-    const markerSize = 3;
-    const markerRefX = markerSize;
-    const markerRefY = markerSize / 2;
-
     behaviorGroups.forEach((group) => {
-      const marker = defs
+      defs
         .append("marker")
         .attr("id", `arrow-${group.behavior}`)
-        .attr("viewBox", `0 0 ${markerSize} ${markerSize}`)
-        .attr("refX", markerRefX)
-        .attr("refY", markerRefY)
-        .attr("markerWidth", markerSize)
-        .attr("markerHeight", markerSize)
-        .attr("orient", "auto");
-
-      marker
+        .attr("viewBox", "0 0 3 3")
+        .attr("refX", 3)
+        .attr("refY", 1.5)
+        .attr("markerWidth", 3)
+        .attr("markerHeight", 3)
+        .attr("orient", "auto")
         .append("path")
-        .attr("d", `M 0,0 L ${markerSize},${markerRefY} L 0,${markerSize} Z`)
+        .attr("d", "M 0,0 L 3,1.5 L 0,3 Z")
         .attr("fill", group.color);
     });
 
-    // Tooltip (slight hover delay)
-    const tooltip = svg
-      .append("g")
-      .style("pointer-events", "none")
-      .style("display", "none");
-
-    const tooltipBg = tooltip
-      .append("rect")
-      .attr("fill", "#f8fafc")
-      .attr("stroke", "#e2e8f0")
-      .attr("rx", 6)
-      .attr("ry", 6);
-
-    const tooltipText = tooltip
-      .append("text")
-      .attr("fill", "#0f172a")
-      .attr("font-size", "12px")
-      .attr("font-weight", 500);
-
+    // Tooltip
+    const tooltip = svg.append("g").style("pointer-events", "none").style("display", "none");
+    const tooltipBg = tooltip.append("rect").attr("fill", "#f8fafc").attr("stroke", "#e2e8f0").attr("rx", 6);
+    const tooltipText = tooltip.append("text").attr("fill", "#0f172a").attr("font-size", "12px").attr("font-weight", 500);
     let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const showTooltipNow = (lines: string[], x: number, y: number) => {
-      tooltipText.selectAll("tspan").remove();
-      lines.forEach((line, index) => {
-        tooltipText
-          .append("tspan")
-          .attr("x", 0)
-          .attr("dy", index === 0 ? "0em" : "1.25em")
-          .text(line);
-      });
-
-      const bbox = (tooltipText.node() as SVGTextElement | null)?.getBBox();
-      if (!bbox) return;
-
-      const paddingX = 8;
-      const paddingY = 6;
-      tooltipBg
-        .attr("x", bbox.x - paddingX)
-        .attr("y", bbox.y - paddingY)
-        .attr("width", bbox.width + paddingX * 2)
-        .attr("height", bbox.height + paddingY * 2);
-
-      tooltip
-        .attr("transform", `translate(${x + 12},${y + 12})`)
-        .style("display", null);
-    };
-
-    const scheduleTooltip = (lines: string[], x: number, y: number) => {
-      if (tooltipTimer) {
-        clearTimeout(tooltipTimer);
-      }
+    const showTooltip = (lines: string[], x: number, y: number) => {
+      if (tooltipTimer) clearTimeout(tooltipTimer);
       tooltipTimer = setTimeout(() => {
-        showTooltipNow(lines, x, y);
+        tooltipText.selectAll("tspan").remove();
+        lines.forEach((line, i) => {
+          tooltipText.append("tspan").attr("x", 0).attr("dy", i === 0 ? "0em" : "1.25em").text(line);
+        });
+        const bbox = (tooltipText.node() as SVGTextElement)?.getBBox();
+        if (!bbox) return;
+        tooltipBg.attr("x", bbox.x - 8).attr("y", bbox.y - 6).attr("width", bbox.width + 16).attr("height", bbox.height + 12);
+        tooltip.attr("transform", `translate(${x + 12},${y + 12})`).style("display", null);
       }, 120);
     };
 
     const hideTooltip = () => {
-      if (tooltipTimer) {
-        clearTimeout(tooltipTimer);
-        tooltipTimer = null;
-      }
+      if (tooltipTimer) { clearTimeout(tooltipTimer); tooltipTimer = null; }
       tooltip.style("display", "none");
     };
 
-    // Calculate node positions on circle
+    // Node positions on circle
     const angleStep = (2 * Math.PI) / nodeCount;
-    const nodePositions = new Map<string, { x: number; y: number; angle: number }>();
-
+    const nodePositions = new Map<string, { x: number; y: number }>();
     allNodes.forEach((node, i) => {
-      const angle = i * angleStep - Math.PI / 2; // Start from top
-      const x = radius * Math.cos(angle);
-      const y = radius * Math.sin(angle);
-      nodePositions.set(node, { x, y, angle });
+      const angle = i * angleStep - Math.PI / 2;
+      nodePositions.set(node, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
     });
 
-    // Draw behavior arcs (outer circles)
+    // Behavior ring
+    const behaviorGroupMap = new Map(behaviorGroups.map((g) => [g.behavior, g]));
+    const behaviors = [
+      ...BEHAVIOR_ORDER.filter((b) => behaviorGroupMap.has(b)),
+      ...behaviorGroups.map((g) => g.behavior).filter((b) => !(BEHAVIOR_ORDER as readonly string[]).includes(b)),
+    ];
+    const behaviorAngleStep = (2 * Math.PI) / behaviors.length;
     const behaviorRadius = radius + 40;
     const arcWidth = 30;
-    const behaviorGroupMap = new Map(
-      behaviorGroups.map((group) => [group.behavior, group])
-    );
-    const orderedBehaviors = [
-      ...BEHAVIOR_ORDER.filter((behavior) => behaviorGroupMap.has(behavior)),
-      ...behaviorGroups
-        .map((group) => group.behavior)
-        .filter((behavior) => !BEHAVIOR_ORDER.includes(behavior)),
-    ];
-    const behaviors = orderedBehaviors;
-    const behaviorAngleStep = (2 * Math.PI) / behaviors.length;
 
     behaviors.forEach((behavior, i) => {
       const startAngle = i * behaviorAngleStep - Math.PI / 2;
       const endAngle = (i + 1) * behaviorAngleStep - Math.PI / 2;
+      const arc = d3.arc().innerRadius(behaviorRadius).outerRadius(behaviorRadius + arcWidth).startAngle(startAngle).endAngle(endAngle);
+      const color = behaviorGroupMap.get(behavior)?.color ?? BEHAVIOR_COLORS[behavior] ?? "#999";
+      const isActive = selectedBehavior === null || selectedBehavior === behavior;
 
-      const arc = d3
-        .arc()
-        .innerRadius(behaviorRadius)
-        .outerRadius(behaviorRadius + arcWidth)
-        .startAngle(startAngle)
-        .endAngle(endAngle);
-
-      const arcGroup = g.append("g").attr("class", `behavior-arc-${behavior}`);
-
-      arcGroup
+      const arcG = g.append("g");
+      arcG
         .append("path")
         .attr("d", arc as any)
-        .attr("fill", BEHAVIOR_COLORS[behavior] || "#999")
-        .attr("opacity", selectedBehavior === null || selectedBehavior === behavior ? 0.7 : 0.2)
+        .attr("fill", color)
+        .attr("opacity", isActive ? 0.7 : 0.2)
         .attr("stroke", "#fff")
         .attr("stroke-width", 2)
         .style("cursor", "pointer")
-        .on("click", () => {
-          setSelectedBehavior(selectedBehavior === behavior ? null : behavior);
-        })
-        .on("dblclick", () => {
-          // Double-click for drill-down
-          onBehaviorDrilldown?.({ behavior });
-        })
-        .on("mouseover", function () {
-          d3.select(this).attr("opacity", 0.9);
-        })
-        .on("mouseout", function () {
-          d3.select(this).attr("opacity", selectedBehavior === null || selectedBehavior === behavior ? 0.7 : 0.2);
-        });
+        .on("click", () => setSelectedBehavior(selectedBehavior === behavior ? null : behavior))
+        .on("dblclick", () => onBehaviorDrilldown?.({ behavior }))
+        .on("mouseover", function () { d3.select(this).attr("opacity", 0.9); })
+        .on("mouseout", function () { d3.select(this).attr("opacity", isActive ? 0.7 : 0.2); });
 
-      // Add behavior label
-      const labelAngle = (startAngle + endAngle) / 2;
-      const labelRadius = behaviorRadius + arcWidth + 14;
-      const labelX = labelRadius * Math.cos(labelAngle);
-      const labelY = labelRadius * Math.sin(labelAngle);
-
-      arcGroup
+      // Label
+      const labelAngle = (startAngle + endAngle) / 2 - Math.PI / 2;
+      const labelR = behaviorRadius + arcWidth + 14;
+      arcG
         .append("text")
-        .attr("x", labelX)
-        .attr("y", labelY)
+        .attr("x", labelR * Math.cos(labelAngle))
+        .attr("y", labelR * Math.sin(labelAngle))
         .attr("text-anchor", "middle")
         .attr("dominant-baseline", "middle")
         .attr("fill", "#0f172a")
@@ -290,96 +208,125 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .text(behavior);
     });
 
-    // Draw links (arcs between nodes)
+    // Links
     const linkGroup = g.append("g").attr("class", "links");
+    const linkHitGroup = g.append("g").attr("class", "link-hits");
+    const behaviorIndex = new Map(behaviors.map((b, i) => [b, i]));
 
-    // Calculate offset for multiple behaviors on same link
-    const behaviorIndex = new Map<string, number>();
-    behaviors.forEach((b, i) => behaviorIndex.set(b, i));
+    type LinkItem = {
+      group: (typeof behaviorGroups)[0];
+      link: { source: string; target: string; count: number };
+      pathD: string;
+      key: string;
+      isSelected: boolean;
+      baseWidth: number;
+      hoverWidth: number;
+    };
+    const linkItems: LinkItem[] = [];
 
     behaviorGroups.forEach((group) => {
       if (selectedBehavior !== null && selectedBehavior !== group.behavior) return;
-
-      const behaviorOffset = behaviorIndex.get(group.behavior) || 0;
-      const totalBehaviors = behaviors.length;
+      const offset = behaviorIndex.get(group.behavior) || 0;
 
       group.links.forEach((link) => {
-        const sourcePos = nodePositions.get(link.source);
-        const targetPos = nodePositions.get(link.target);
+        const s = nodePositions.get(link.source);
+        const t = nodePositions.get(link.target);
+        if (!s || !t) return;
 
-        if (!sourcePos || !targetPos) return;
+        const dx = t.x - s.x, dy = t.y - s.y;
+        const dr = Math.sqrt(dx * dx + dy * dy) * (0.9 + offset * 0.05);
+        const pathD = `M${s.x},${s.y}A${dr},${dr} 0 0,1 ${t.x},${t.y}`;
+        const key = linkKey(group.behavior, link.source, link.target);
 
-        // Calculate arc path with offset for multiple behaviors
-        const dx = targetPos.x - sourcePos.x;
-        const dy = targetPos.y - sourcePos.y;
-        const dr = Math.sqrt(dx * dx + dy * dy);
-        
-        // Add offset based on behavior index when showing all behaviors
-        let offsetDr = dr;
-        if (selectedBehavior === null && totalBehaviors > 1) {
-          // Offset each behavior slightly to make them visible
-          const offsetFactor = 0.9 + (behaviorOffset * 0.05);
-          offsetDr = dr * offsetFactor;
-        }
-
-        const baseStrokeWidth = Math.max(1, Math.sqrt(link.count));
-        const hoverStrokeWidth = Math.max(2, Math.sqrt(link.count) * 2);
-
-        // Create curved path
-        const path = linkGroup
-          .append("path")
-          .attr("class", `link link-${group.behavior}`)
-          .attr("d", `M${sourcePos.x},${sourcePos.y}A${offsetDr},${offsetDr} 0 0,1 ${targetPos.x},${targetPos.y}`)
-          .attr("fill", "none")
-          .attr("stroke", group.color)
-          .attr("stroke-width", baseStrokeWidth)
-          .attr("opacity", selectedBehavior === null ? 0.2 : 0.4)
-          .attr("marker-end", `url(#arrow-${group.behavior})`)
-          .style("pointer-events", "all")
-          .style("cursor", "pointer");
-
-        // Add hover and click effects
-        path
-          .on("click", function () {
-            const sourceName = idToName.get(link.source) || link.source;
-            const targetName = idToName.get(link.target) || link.target;
-            onLinkClick?.({
-              behavior: group.behavior,
-              fromId: link.source,
-              toId: link.target,
-              fromName: sourceName,
-              toName: targetName,
-              count: link.count,
-            });
-          })
-          .on("mouseover", function () {
-            d3.select(this)
-              .attr("opacity", 0.8)
-              .attr("stroke-width", hoverStrokeWidth);
-          })
-          .on("mousemove", function (event) {
-            const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
-            scheduleTooltip(linkTooltipLines(link.source, link.target, group.behavior, link.count), x, y);
-          })
-          .on("mouseout", function () {
-            d3.select(this)
-              .attr("opacity", selectedBehavior === null ? 0.2 : 0.4)
-              .attr("stroke-width", baseStrokeWidth);
-            hideTooltip();
-          })
-          .on("mouseleave", hideTooltip);
+        linkItems.push({
+          group,
+          link,
+          pathD,
+          key,
+          isSelected: selectedLinkKey === key,
+          baseWidth: Math.max(1, Math.sqrt(link.count)),
+          hoverWidth: Math.max(2, Math.sqrt(link.count) * 2),
+        });
       });
     });
 
-    // Draw nodes
-    const nodeGroup = g.append("g").attr("class", "nodes");
+    // Sort so selected link is on top
+    linkItems.sort((a, b) => (a.isSelected ? 1 : 0) - (b.isSelected ? 1 : 0));
 
+    // Build node → edge map
+    nodeEdgesRef.current.clear();
+    linkItems.forEach(({ link, key }) => {
+      [link.source, link.target].forEach((n) => {
+        if (!nodeEdgesRef.current.has(n)) nodeEdgesRef.current.set(n, []);
+        nodeEdgesRef.current.get(n)!.push(key);
+      });
+    });
+
+    const baseOpacity = selectedBehavior === null ? 0.2 : 0.4;
+
+    // Draw visible links
+    linkItems.forEach(({ group, pathD, key, isSelected, baseWidth }) => {
+      linkGroup
+        .append("g")
+        .attr("data-link-key", key)
+        .style("pointer-events", "none")
+        .append("path")
+        .attr("class", "link-visible")
+        .attr("d", pathD)
+        .attr("fill", "none")
+        .attr("stroke", group.color)
+        .attr("stroke-width", isSelected ? Math.max(baseWidth * 2, 4) : baseWidth)
+        .attr("opacity", isSelected ? 0.95 : baseOpacity)
+        .attr("marker-end", `url(#arrow-${group.behavior})`);
+    });
+
+    // Link hover/click helpers
+    const updateLink = (key: string, opacity: number, width: number) => {
+      linkGroup.select(`g[data-link-key="${key}"] .link-visible`).attr("opacity", opacity).attr("stroke-width", width);
+    };
+
+    const resetAllLinks = (hoveredKey: string | null) => {
+      linkItems.forEach(({ key, isSelected, baseWidth, hoverWidth }) => {
+        if (isSelected) updateLink(key, 0.95, Math.max(hoverWidth, 4));
+        else if (key === hoveredKey) updateLink(key, 0.8, hoverWidth);
+        else updateLink(key, baseOpacity, baseWidth);
+      });
+    };
+
+    // Link hit areas
+    linkItems.forEach(({ group, link, pathD, key }) => {
+      const fromName = idToName.get(link.source) ?? link.source;
+      const toName = idToName.get(link.target) ?? link.target;
+      linkInfoByKeyRef.current.set(key, { group, link, fromName, toName });
+
+      linkHitGroup
+        .append("path")
+        .attr("d", pathD)
+        .attr("fill", "none")
+        .attr("stroke", "transparent")
+        .attr("stroke-width", 36)
+        .style("cursor", "pointer")
+        .on("click", () => {
+          setSelectedLinkKey((prev) => (prev === key ? null : key));
+          onLinkClick?.({ behavior: group.behavior, fromId: link.source, toId: link.target, fromName, toName, count: link.count });
+        })
+        .on("mouseover", function () { d3.select(this).raise(); resetAllLinks(key); })
+        .on("mousemove", (event) => {
+          const [x, y] = d3.pointer(event, svg.node()!);
+          const lines = showNames
+            ? [`${fromName} (${link.source}) → ${toName} (${link.target})`, `Behavior: ${group.behavior}`, `Count: ${link.count}`, "Click to view details"]
+            : [`${link.source} → ${link.target}`, `Behavior: ${group.behavior}`, `Count: ${link.count}`, "Click to view details"];
+          showTooltip(lines, x, y);
+        })
+        .on("mouseout", () => { resetAllLinks(null); hideTooltip(); });
+    });
+
+    // Nodes
+    const nodeGroup = g.append("g").attr("class", "nodes");
     allNodes.forEach((node) => {
       const pos = nodePositions.get(node)!;
-
       const nodeG = nodeGroup.append("g").attr("transform", `translate(${pos.x},${pos.y})`);
 
-      // Node circle
       nodeG
         .append("circle")
         .attr("r", 8)
@@ -387,56 +334,83 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
         .attr("stroke", "#4A90E2")
         .attr("stroke-width", 2)
         .style("cursor", "pointer")
-        .on("mouseover", function () {
-          d3.select(this).attr("r", 12).attr("stroke-width", 3);
+        .on("click", (event: MouseEvent) => {
+          const keys = nodeEdgesRef.current.get(node) ?? [];
+          if (keys.length === 0) return;
+          if (keys.length === 1) {
+            const info = linkInfoByKeyRef.current.get(keys[0]);
+            if (info) {
+              setSelectedLinkKey((prev) => (prev === keys[0] ? null : keys[0]));
+              onLinkClick?.({ behavior: info.group.behavior, fromId: info.link.source, toId: info.link.target, fromName: info.fromName, toName: info.toName, count: info.link.count });
+            }
+            return;
+          }
+          setNodePopover({ keys, clientX: event.clientX, clientY: event.clientY });
         })
-        .on("mousemove", function (event) {
-          const [x, y] = d3.pointer(event, svg.node() as SVGSVGElement);
-          const line = showNames ? `${idToName.get(node) || node} (${node})` : node;
-          scheduleTooltip([line], x, y);
+        .on("mouseover", function () { d3.select(this).attr("r", 12).attr("stroke-width", 3); })
+        .on("mousemove", (event) => {
+          const [x, y] = d3.pointer(event, svg.node()!);
+          showTooltip([showNames ? `${idToName.get(node) || node} (${node})` : node], x, y);
         })
-        .on("mouseout", function () {
-          d3.select(this).attr("r", 8).attr("stroke-width", 2);
-          hideTooltip();
-        });
+        .on("mouseout", function () { d3.select(this).attr("r", 8).attr("stroke-width", 2); hideTooltip(); });
 
       // Node label
-      const labelDistance = 20;
-      const labelX = (pos.x / radius) * (radius + labelDistance) - pos.x;
-      const labelY = (pos.y / radius) * (radius + labelDistance) - pos.y;
-
+      const labelDist = 20;
+      const lx = (pos.x / radius) * (radius + labelDist) - pos.x;
+      const ly = (pos.y / radius) * (radius + labelDist) - pos.y;
       nodeG
         .append("text")
-        .attr("x", labelX)
-        .attr("y", labelY)
+        .attr("x", lx)
+        .attr("y", ly)
         .attr("text-anchor", "middle")
         .attr("dominant-baseline", "middle")
         .attr("fill", "#333")
         .attr("font-size", "11px")
         .style("pointer-events", "none")
         .text(nodeLabel(node));
-
     });
-  }, [data, showNames, selectedBehavior, dimensions, onLinkClick, onBehaviorDrilldown]);
 
-  const behaviors = [
-    ...BEHAVIOR_ORDER.filter((behavior) => behavior in BEHAVIOR_COLORS),
-    ...Object.keys(BEHAVIOR_COLORS).filter(
-      (behavior) => !BEHAVIOR_ORDER.includes(behavior)
-    ),
-  ];
+    // Zoom
+    const contentRadius = radius + 80;
+    const zoomBehavior = d3
+      .zoom<SVGSVGElement, unknown>()
+      .scaleExtent([1, 4])
+      .on("zoom", (event) => {
+        const k = event.transform.k;
+        const cw = 2 * contentRadius * k, ch = 2 * contentRadius * k;
+        let minX: number, maxX: number, minY: number, maxY: number;
+        if (cw <= SIZE && ch <= SIZE) {
+          minX = k * (contentRadius - centerX); maxX = SIZE - k * (centerX + contentRadius);
+          minY = k * (contentRadius - centerY); maxY = SIZE - k * (centerY + contentRadius);
+        } else {
+          minX = -k * (centerX + contentRadius); maxX = SIZE - k * (centerX - contentRadius);
+          minY = -k * (centerY + contentRadius); maxY = SIZE - k * (centerY - contentRadius);
+        }
+        const tx = Math.min(Math.max(event.transform.x, minX), maxX);
+        const ty = Math.min(Math.max(event.transform.y, minY), maxY);
+        const clamped = d3.zoomIdentity.translate(tx, ty).scale(k);
+        zoomTransformRef.current = clamped;
+        zoomG.attr("transform", clamped.toString());
+        if (tx !== event.transform.x || ty !== event.transform.y) svg.call(zoomBehavior.transform, clamped);
+      });
+
+    zoomBehaviorRef.current = zoomBehavior;
+    svg.call(zoomBehavior);
+
+    // Restore previous zoom
+    if (zoomTransformRef.current) {
+      svg.call(zoomBehavior.transform, zoomTransformRef.current);
+    }
+  }, [data, showNames, selectedBehavior, selectedLinkKey, onLinkClick, onBehaviorDrilldown]);
 
   return (
     <div className="space-y-4">
+      {/* Behavior filter buttons */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          onClick={() => setSelectedBehavior(null)}
-          variant={selectedBehavior === null ? "default" : "outline"}
-          size="sm"
-        >
+        <Button onClick={() => setSelectedBehavior(null)} variant={selectedBehavior === null ? "default" : "outline"} size="sm">
           All
         </Button>
-        {behaviors.map((behavior) => (
+        {BEHAVIOR_BUTTON_LIST.map((behavior) => (
           <Button
             key={behavior}
             onClick={() => setSelectedBehavior(selectedBehavior === behavior ? null : behavior)}
@@ -444,23 +418,99 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
             size="sm"
             className="gap-2"
           >
-            <div
-              className="w-3 h-3 rounded-full"
-              style={{ backgroundColor: BEHAVIOR_COLORS[behavior] }}
-            />
+            <div className="w-3 h-3 shrink-0 rounded-full border border-white/80 shadow-sm" style={{ backgroundColor: BEHAVIOR_COLORS[behavior] ?? "#999" }} />
             <span className="capitalize">{behavior}</span>
           </Button>
         ))}
       </div>
 
-      <div className="flex justify-center bg-muted/50 rounded-lg p-4">
-        <svg ref={svgRef} className="max-w-full h-auto" />
+      {/* Diagram container */}
+      <div className="relative w-full bg-muted/50 rounded-lg">
+        {/* Node popover */}
+        {nodePopover && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setNodePopover(null)} />
+            <div
+              className="fixed z-50 w-96 rounded-lg border bg-popover text-popover-foreground shadow-lg ring-1 ring-border/50"
+              style={{
+                left: Math.min(nodePopover.clientX + 8, typeof window !== "undefined" ? window.innerWidth - 400 : nodePopover.clientX + 8),
+                top: Math.min(nodePopover.clientY + 8, typeof window !== "undefined" ? window.innerHeight - 280 : nodePopover.clientY + 8),
+              }}
+              role="dialog"
+            >
+              <div className="border-b border-border/50 px-3 py-2.5">
+                <p className="text-sm font-medium">Choose an interaction</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Select one to view details</p>
+              </div>
+              <ScrollArea className="h-[240px] rounded-b-lg">
+                <ul className="p-2">
+                  {[...nodePopover.keys]
+                    .sort((a, b) => {
+                      const ia = linkInfoByKeyRef.current.get(a);
+                      const ib = linkInfoByKeyRef.current.get(b);
+                      const idxA = ia ? (BEHAVIOR_ORDER as readonly string[]).indexOf(ia.group.behavior) : 999;
+                      const idxB = ib ? (BEHAVIOR_ORDER as readonly string[]).indexOf(ib.group.behavior) : 999;
+                      return idxA !== idxB ? idxA - idxB : a.localeCompare(b);
+                    })
+                    .map((key) => {
+                      const info = linkInfoByKeyRef.current.get(key);
+                      if (!info) return null;
+                      return (
+                        <li key={key}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent"
+                            onClick={() => {
+                              setSelectedLinkKey(key);
+                              onLinkClick?.({ behavior: info.group.behavior, fromId: info.link.source, toId: info.link.target, fromName: info.fromName, toName: info.toName, count: info.link.count });
+                              setNodePopover(null);
+                            }}
+                          >
+                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: info.group.color }} />
+                            <span className="min-w-0 flex-1 truncate font-medium">
+                              {showNames ? `${info.fromName} → ${info.toName}` : `${info.link.source} → ${info.link.target}`}
+                            </span>
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{info.group.behavior}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground">×{info.link.count}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                </ul>
+              </ScrollArea>
+            </div>
+          </>
+        )}
+
+        {/* SVG */}
+        <svg ref={svgRef} style={{ width: "100%", height: "auto" }} />
+
+        {/* Zoom controls */}
+        <div className="absolute top-2 right-2 flex gap-1">
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-8 w-8 rounded-md shadow"
+            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.2)}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-8 w-8 rounded-md shadow"
+            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 0.8)}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
-      <div className="text-sm text-muted-foreground space-y-1">
-        <p>💡 Tip: Click on the outer behavior arcs or buttons to view specific behavior links</p>
-        <p>Total records: {data.length}</p>
-      </div>
+      <p className="text-sm text-muted-foreground">Total records: {data.length}</p>
     </div>
   );
 }

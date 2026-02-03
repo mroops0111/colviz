@@ -2,24 +2,15 @@
 
 import { useState, useMemo, useCallback, useEffect } from "react";
 import ArcDiagram, { LinkClickEvent, BehaviorClickEvent } from "@/components/ArcDiagram";
+import { FrontendTools } from "@/components/copilotkit";
 import TimeRangeFilter from "@/components/TimeRangeFilter";
 import TeamFilter from "@/components/TeamFilter";
 import SourceFilter from "@/components/SourceFilter";
 import EventDrawer from "@/components/EventDrawer";
 import { Card, CardContent } from "@/components/ui/card";
-import { CollaborationData } from "@/lib/types";
-
-interface DrilldownFilters {
-  behavior?: string;
-  from_id?: string;
-  to_id?: string;
-  from?: string;
-  to?: string;
-  sources?: string[];
-  teams?: string[];
-  start?: string;
-  end?: string;
-}
+import { Button } from "@/components/ui/button";
+import { BEHAVIOR_ORDER } from "@/lib/dataProcessor";
+import { CollaborationData, DrilldownFilters, ProjectContext } from "@/lib/types";
 
 export default function Home() {
   const [data, setData] = useState<CollaborationData[]>([]);
@@ -27,28 +18,47 @@ export default function Home() {
   const [selectedRange, setSelectedRange] = useState<[Date, Date] | null>(null);
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
-  const [showNames, setShowNames] = useState(true); // true = names (from/to), false = ids only
+  const [showNames, setShowNames] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // Drill-down drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drilldownFilters, setDrilldownFilters] = useState<DrilldownFilters>({});
 
-  // Compute filtered data based on date range and selected teams
+  // Compute filtered data based on date range and selected teams/sources
+  // If any filter is cleared (empty), show no data
   const filteredData = useMemo(() => {
     if (!selectedRange) return data;
+    if (selectedTeams.size === 0 || selectedSources.size === 0) return [];
 
     return data.filter((d) => {
       const date = new Date(d.date);
-      const inDateRange =
-        date >= selectedRange[0] && date <= selectedRange[1];
-      const inTeamFilter =
-        selectedTeams.size === 0 || selectedTeams.has(d.team_id);
-      const inSourceFilter =
-        selectedSources.size === 0 || selectedSources.has(d.source);
+      const inDateRange = date >= selectedRange[0] && date <= selectedRange[1];
+      const inTeamFilter = selectedTeams.has(d.team_id);
+      const inSourceFilter = selectedSources.has(d.source);
       return inDateRange && inTeamFilter && inSourceFilter;
     });
   }, [data, selectedRange, selectedTeams, selectedSources]);
+
+  // Derive project context once data is loaded (sources, teams, members, behaviors)
+  const projectContext = useMemo((): ProjectContext | undefined => {
+    if (data.length === 0) return undefined;
+    const sources = Array.from(new Set(data.map((d) => d.source))).sort();
+    const teamMap = new Map<string, string>();
+    data.forEach((d) => teamMap.set(d.team_id, d.team));
+    const teams = Array.from(teamMap.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const memberMap = new Map<string, string>();
+    data.forEach((d) => {
+      memberMap.set(d.from_id, d.from);
+      memberMap.set(d.to_id, d.to);
+    });
+    const members = Array.from(memberMap.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return { sources, teams, members, behaviors: [...BEHAVIOR_ORDER] };
+  }, [data]);
 
   const handleDataLoaded = useCallback((loadedData: CollaborationData[]) => {
     setData(loadedData);
@@ -142,6 +152,19 @@ export default function Home() {
     [buildDrilldownFilters]
   );
 
+  const handleOpenDrilldown = useCallback(
+    (args: { from_id: string; to_id: string }) => {
+      setDrilldownFilters(
+        buildDrilldownFilters({
+          from_id: args.from_id,
+          to_id: args.to_id,
+        })
+      );
+      setDrawerOpen(true);
+    },
+    [buildDrilldownFilters]
+  );
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-muted/50">
       <div className="container mx-auto px-4 py-8">
@@ -179,6 +202,7 @@ export default function Home() {
                 <CardContent className="pt-5">
                   <TeamFilter
                     data={data}
+                    selected={selectedTeams}
                     onFilterChange={handleTeamFilterChange}
                   />
                 </CardContent>
@@ -188,6 +212,7 @@ export default function Home() {
                 <CardContent className="pt-5">
                   <SourceFilter
                     data={data}
+                    selected={selectedSources}
                     onFilterChange={handleSourceFilterChange}
                   />
                 </CardContent>
@@ -197,43 +222,38 @@ export default function Home() {
                 <CardContent className="pt-5">
                   <p className="text-sm font-medium mb-2">Display Label</p>
                   <div className="flex gap-2">
-                    <button
+                    <Button
                       type="button"
+                      variant={showNames ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1"
                       onClick={() => setShowNames(true)}
-                      className={`flex-1 px-3 py-2 text-sm rounded-md border transition-colors ${
-                        showNames
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "bg-background border-input hover:bg-muted/50"
-                      }`}
                     >
                       Name
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
+                      variant={!showNames ? "default" : "outline"}
+                      size="sm"
+                      className="flex-1"
                       onClick={() => setShowNames(false)}
-                      className={`flex-1 px-3 py-2 text-sm rounded-md border transition-colors ${
-                        !showNames
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "bg-background border-input hover:bg-muted/50"
-                      }`}
                     >
                       ID Only
-                    </button>
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             </aside>
 
-            <Card className="h-full">
+            <Card className="h-full min-w-0">
               <CardContent className="pt-6">
-                <div className="flex justify-center">
-                  <ArcDiagram
-                    data={filteredData}
-                    showNames={showNames}
-                    onLinkClick={handleLinkClick}
-                    onBehaviorDrilldown={handleBehaviorDrilldown}
-                  />
-                </div>
+                <ArcDiagram
+                  data={filteredData}
+                  showNames={showNames}
+                  onLinkClick={handleLinkClick}
+                  onBehaviorDrilldown={handleBehaviorDrilldown}
+                  eventDrawerOpen={drawerOpen}
+                />
               </CardContent>
             </Card>
           </div>
@@ -246,6 +266,8 @@ export default function Home() {
           showNames={showNames}
           datasetName="default"
         />
+
+        <FrontendTools projectContext={projectContext} onOpenDrilldown={handleOpenDrilldown} />
       </div>
     </div>
   );

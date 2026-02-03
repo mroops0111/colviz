@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@copilotkit/react-ui/styles.css";
+import { CopilotKit } from "@copilotkit/react-core";
+import { CopilotSidebar } from "@copilotkit/react-ui";
+import { COLVIZ_SYSTEM_PROMPT } from "@/prompts/system-message";
+import { COLVIZ_SIDEBAR_WELCOME } from "@/prompts/welcome-message";
 
 export const metadata: Metadata = {
   title: "ColViz - Collaboration Visualization",
@@ -14,7 +19,18 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        {children}
+        <CopilotKit
+          runtimeUrl="/api/copilotkit"
+          showDevConsole={process.env.NEXT_PUBLIC_COPILOTKIT_DEBUG === "true"}
+        >
+          <CopilotSidebar
+            defaultOpen={false}
+            hitEscapeToClose={false}
+            instructions={COLVIZ_SYSTEM_PROMPT}
+            labels={{ initial: COLVIZ_SIDEBAR_WELCOME }}
+          />
+          {children}
+        </CopilotKit>
       </body>
     </html>
   );

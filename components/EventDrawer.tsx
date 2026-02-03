@@ -11,51 +11,63 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BEHAVIOR_COLORS } from "@/lib/dataProcessor";
+import type { DrilldownFilters, DrilldownEventRecord, DrilldownRawItem } from "@/lib/types";
 
-interface DrilldownFilters {
-  behavior?: string;
-  from_id?: string;
-  to_id?: string;
-  from?: string;
-  to?: string;
-  sources?: string[];
-  teams?: string[];
-  start?: string;
-  end?: string;
+function getPayloadObj(payload: unknown): Record<string, unknown> | null {
+  if (payload == null) return null;
+  if (typeof payload === "object" && !Array.isArray(payload)) return payload as Record<string, unknown>;
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
-interface RawItem {
-  id: string;
-  sourceItemType: string;
-  sourceItemId: string;
-  title: string | null;
-  content: string;
-  contentFormat: string;
-  payload: Record<string, unknown> | null;
+const PAYLOAD_SKIP_KEYS = ["meetingGoal", "meetingTime", "members", "teams"];
+
+function formatPayloadValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join("、");
+  if (typeof value === "object" && value !== null) return JSON.stringify(value);
+  return String(value);
 }
 
-interface EventRecord {
-  id: string;
-  datetime: string;
-  date: string;
-  source: string;
-  scope: string;
-  team_id: string;
-  team: string;
-  behavior: string;
-  from_id: string;
-  from: string;
-  to_id: string;
-  to: string;
-  weight: number;
-  rawItem: RawItem | null;
+function RawPayloadDetails({ payload }: { payload: Record<string, unknown> }) {
+  const displayKeys = Object.keys(payload).filter((k) => !PAYLOAD_SKIP_KEYS.includes(k));
+  const nonEmptyKeys = displayKeys.filter((key) => {
+    const value = payload[key];
+    return value !== undefined && value !== "" && !(Array.isArray(value) && value.length === 0);
+  });
+  return (
+    <details className="text-xs border rounded-lg">
+      <summary className="cursor-pointer text-muted-foreground hover:text-foreground p-2 hover:bg-muted/30">
+        📋 View Raw Data
+      </summary>
+      <div className="p-3 border-t space-y-2 max-h-64 overflow-y-auto">
+        <div className="space-y-1">
+          {nonEmptyKeys.map((key) => (
+            <div key={key} className="flex gap-2 text-[10px]">
+              <span className="font-medium text-muted-foreground min-w-32">{key}:</span>
+              <span className="flex-1 break-words">{formatPayloadValue(payload[key])}</span>
+            </div>
+          ))}
+          {nonEmptyKeys.length === 0 && (
+            <div className="text-muted-foreground text-[10px] italic">No additional data</div>
+          )}
+        </div>
+      </div>
+    </details>
+  );
 }
 
 interface EventDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   filters: DrilldownFilters;
-  showNames?: boolean; // true = show from/to names, false = show from_id/to_id only
+  showNames?: boolean;
   datasetName?: string;
 }
 
@@ -66,7 +78,7 @@ export default function EventDrawer({
   showNames = true,
   datasetName = "default",
 }: EventDrawerProps) {
-  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [events, setEvents] = useState<DrilldownEventRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -95,7 +107,7 @@ export default function EventDrawer({
         if (!res.ok) throw new Error("Failed to fetch events");
 
         const json = (await res.json()) as {
-          events: EventRecord[];
+          events: DrilldownEventRecord[];
           total: number;
         };
         setEvents(json.events ?? []);
@@ -132,15 +144,8 @@ export default function EventDrawer({
     });
   };
 
-  const getBehaviorColor = (behavior: string) => {
-    const colors = {
-      coordination: "#4A90E2",
-      sharing: "#50C878", 
-      improving: "#F5A623",
-      awareness: "#9B59B6",
-    };
-    return colors[behavior as keyof typeof colors] || "#64748b";
-  };
+  const getBehaviorColor = (behavior: string) =>
+    BEHAVIOR_COLORS[behavior] ?? "#64748b";
 
   const title = filters.behavior
     ? filters.from_id && filters.to_id
@@ -151,8 +156,13 @@ export default function EventDrawer({
     : "All events";
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:w-[540px] sm:max-w-xl">
+    <Sheet open={open} onOpenChange={onOpenChange} modal={false}>
+      <SheetContent
+        side="left"
+        className="w-full sm:w-[540px] sm:max-w-xl"
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             <span>{title}</span>
@@ -205,27 +215,20 @@ export default function EventDrawer({
 
                       {event.rawItem ? (
                         <div className="space-y-3">
-                          {/* Meeting-specific display */}
-                          {event.source === "meeting" && event.rawItem.payload && (() => {
-                            // Parse payload JSON string
-                            const payload = typeof event.rawItem.payload === 'string' 
-                              ? JSON.parse(event.rawItem.payload) 
-                              : event.rawItem.payload as Record<string, unknown>;
+                          {event.source === "meeting" && (() => {
+                            const payload = getPayloadObj(event.rawItem.payload);
+                            if (!payload) return null;
                             const meetingGoal = (payload.meetingGoal as string) || event.rawItem.title || "";
                             const meetingTime = payload.meetingTime as string;
-                            const members = payload.members as string[];
-                            
+                            const members = payload.members as string[] | undefined;
                             return (
                               <>
-                                {/* Meeting Goal */}
                                 {meetingGoal && (
                                   <div className="bg-muted/50 p-2 rounded">
                                     <div className="text-muted-foreground mb-1 text-xs">Meeting Goal</div>
                                     <div className="font-medium text-sm">{meetingGoal}</div>
                                   </div>
                                 )}
-                                
-                                {/* Meeting Time & Members */}
                                 <div className="grid grid-cols-2 gap-3 text-xs">
                                   {meetingTime && (
                                     <div className="bg-muted/50 p-2 rounded">
@@ -243,77 +246,21 @@ export default function EventDrawer({
                               </>
                             );
                           })()}
-                          
-                          {/* Title (for non-meeting sources) */}
                           {event.source !== "meeting" && event.rawItem.title && (
-                            <div className="font-medium text-sm">
-                              {event.rawItem.title}
-                            </div>
+                            <div className="font-medium text-sm">{event.rawItem.title}</div>
                           )}
-                          
-                          {/* Content */}
                           {event.rawItem.content && (
                             <div className="bg-muted/50 p-2 rounded">
-                              <div className="text-xs font-medium text-muted-foreground mb-1">
-                                Content
-                              </div>
+                              <div className="text-xs font-medium text-muted-foreground mb-1">Content</div>
                               <div className="whitespace-pre-wrap text-xs max-h-48 overflow-y-auto">
                                 {event.rawItem.content}
                               </div>
                             </div>
                           )}
-                          
-                          {/* Metadata (collapsed, prettified) */}
-                          {event.rawItem.payload && (
-                            <details className="text-xs border rounded-lg">
-                              <summary className="cursor-pointer text-muted-foreground hover:text-foreground p-2 hover:bg-muted/30">
-                                📋 View Raw Data
-                              </summary>
-                              <div className="p-3 border-t space-y-2 max-h-64 overflow-y-auto">
-                                {(() => {
-                                  // Parse payload JSON string
-                                  const payload = typeof event.rawItem!.payload === 'string' 
-                                    ? JSON.parse(event.rawItem!.payload) 
-                                    : event.rawItem!.payload as Record<string, unknown>;
-                                  
-                                  // Skip already displayed important keys
-                                  const skipKeys = ['meetingGoal', 'meetingTime', 'members', 'teams'];
-                                  const displayKeys = Object.keys(payload).filter(k => !skipKeys.includes(k));
-                                  const nonEmptyKeys = displayKeys.filter(key => {
-                                    const value = payload[key];
-                                    return value && value !== '' && !(Array.isArray(value) && value.length === 0);
-                                  });
-                                  
-                                  return (
-                                    <div className="space-y-1">
-                                      {nonEmptyKeys.map(key => {
-                                        const value = payload[key];
-                                        
-                                        return (
-                                          <div key={key} className="flex gap-2 text-[10px]">
-                                            <span className="font-medium text-muted-foreground min-w-32">
-                                              {key}:
-                                            </span>
-                                            <span className="flex-1 break-words">
-                                              {Array.isArray(value) ? value.join('、') :
-                                               typeof value === 'object' && value !== null ? JSON.stringify(value) : 
-                                               String(value)}
-                                            </span>
-                                          </div>
-                                        );
-                                      })}
-                                      
-                                      {nonEmptyKeys.length === 0 && (
-                                        <div className="text-muted-foreground text-[10px] italic">
-                                          No additional data
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-                              </div>
-                            </details>
-                          )}
+                          {(() => {
+                            const payload = getPayloadObj(event.rawItem.payload);
+                            return payload ? <RawPayloadDetails payload={payload} /> : null;
+                          })()}
                         </div>
                       ) : (
                         <div className="text-muted-foreground text-xs italic text-center py-4">
