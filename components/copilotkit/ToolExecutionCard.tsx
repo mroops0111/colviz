@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle, Loader2, LucideIcon } from "lucide-react";
+import { AlertCircle, CheckCircle, Loader2, LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -11,9 +11,8 @@ export interface ToolExecutionCardProps {
   icon?: LucideIcon;
   status: ToolStatus;
   className?: string;
-  query?: string;
-  resultSummary?: string;
-  resultDetails?: string;
+  /** Short hint (e.g. "Running…" / "Done" / "Failed") */
+  hint?: string;
 }
 
 export function ToolExecutionCard({
@@ -21,48 +20,46 @@ export function ToolExecutionCard({
   icon: Icon,
   status,
   className,
-  query,
-  resultSummary,
-  resultDetails,
+  hint,
 }: ToolExecutionCardProps) {
   const isLoading = status === "inProgress" || status === "executing";
+  const isError = status === "error";
 
   return (
     <Card
       className={cn(
-        "w-full max-w-2xl border shadow-sm bg-muted/30 dark:bg-muted/20",
+        "w-full max-w-md border shadow-sm bg-muted/20 dark:bg-muted/10",
         className
       )}
     >
-      <CardContent className="p-3 space-y-1.5">
-        <div className="flex items-center gap-2.5">
+      <CardContent className="px-3 py-2">
+        <div className="flex items-center gap-2.5 min-h-8">
           <div className="flex-shrink-0 text-primary">
             {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : isError ? (
+              <AlertCircle className="h-3.5 w-3.5 text-destructive" />
             ) : Icon ? (
-              <Icon className="h-4 w-4" />
+              <Icon className="h-3.5 w-3.5" />
             ) : null}
           </div>
-          <div className="flex-1 min-w-0">
-            <span className="text-xs font-medium">{title}</span>
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <span className="text-xs font-medium truncate">{title}</span>
             {status === "complete" && (
-              <CheckCircle className="inline-block h-3 w-3 ml-1.5 text-muted-foreground" />
+              <CheckCircle className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
             )}
           </div>
+          {hint != null && (
+            <span
+              className={cn(
+                "text-[11px] flex-shrink-0",
+                isError ? "text-destructive" : "text-muted-foreground"
+              )}
+            >
+              {hint}
+            </span>
+          )}
         </div>
-        {query && (
-          <p className="text-[11px] text-muted-foreground truncate pl-6">
-            {query}
-          </p>
-        )}
-        {resultSummary && (
-          <p className="text-xs text-muted-foreground pl-6">{resultSummary}</p>
-        )}
-        {resultDetails && (
-          <pre className="text-[11px] text-muted-foreground pl-6 whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
-            {resultDetails}
-          </pre>
-        )}
       </CardContent>
     </Card>
   );

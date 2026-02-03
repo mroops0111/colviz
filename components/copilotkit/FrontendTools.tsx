@@ -13,6 +13,27 @@ function toolStatusToCardStatus(status: string): ToolStatus {
   return status === "complete" ? "complete" : status === "executing" ? "executing" : "inProgress";
 }
 
+/** Resolve card status and hint from tool status + result; treat result with error field as failed. */
+function resolveCardStatusAndHint(status: string, result: unknown): { cardStatus: ToolStatus; hint: string } {
+  const baseStatus = toolStatusToCardStatus(status);
+  if (baseStatus !== "complete") {
+    return { cardStatus: baseStatus, hint: "Running…" };
+  }
+  let hasError = false;
+  if (result != null) {
+    try {
+      const data = typeof result === "string" ? JSON.parse(result) : result;
+      hasError = typeof (data as { error?: string })?.error === "string";
+    } catch {
+      // ignore parse errors
+    }
+  }
+  if (hasError) {
+    return { cardStatus: "error", hint: "Failed" };
+  }
+  return { cardStatus: "complete", hint: "Done" };
+}
+
 function appendParams(params: URLSearchParams, args: Record<string, unknown>, keys: string[]) {
   for (const k of keys) {
     const v = args[k];
@@ -157,7 +178,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
   useFrontendTool({
     name: "getInteractionEvents",
     description:
-      "Get collaboration events for a single link (from_id → to_id, behavior).",
+      "Get detailed collaboration events and raw data for interactions between two members (from_id → to_id), filtered by behavior, team, source, start, end.",
     parameters: getInteractionEventsParameters,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
@@ -170,36 +191,14 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
       },
       [projectContext]
     ),
-    render: ({ args, result, status }: { args: Record<string, unknown>; result: unknown; status: string }) => {
-      const query =
-        args?.behavior && args?.from_id && args?.to_id
-          ? `${args.behavior}: ${args.from_id} → ${args.to_id}`
-          : "";
-      const cardStatus = toolStatusToCardStatus(status);
-      let resultSummary: string | undefined;
-      let resultDetails: string | undefined;
-      if (status === "complete" && result != null) {
-        const data = typeof result === "string" ? JSON.parse(result) : result;
-        const err = (data as { error?: string })?.error;
-        const total = (data as { total?: number })?.total ?? 0;
-        const events = (data as { events?: { date?: string; from?: string; to?: string }[] })?.events ?? [];
-        resultSummary = err ?? `Found ${total} event${total !== 1 ? "s" : ""}.`;
-        resultDetails =
-          !err && events.length > 0
-            ? events
-                .slice(0, 5)
-                .map((e) => `${e.date ?? ""} ${e.from ?? ""} → ${e.to ?? ""}`)
-                .join("\n") + (events.length > 5 ? "\n…" : "")
-            : undefined;
-      }
+    render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
+      const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Interaction events"
+          title="Query interaction events"
           icon={List}
           status={cardStatus}
-          query={query || (cardStatus !== "complete" ? "Loading…" : undefined)}
-          resultSummary={resultSummary}
-          resultDetails={resultDetails}
+          hint={hint}
         />
       );
     },
@@ -208,7 +207,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
   useFrontendTool({
     name: "listInteractions",
     description:
-      "List all collaboration interactions (from→to, behavior) with counts.",
+      "List brief collaboration interaction summaries with counts, filtered by behavior, team, source, start, end.",
     parameters: listInteractionsParameters,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
@@ -221,34 +220,14 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
       },
       [projectContext]
     ),
-    render: ({ args, result, status }: { args: Record<string, unknown>; result: unknown; status: string }) => {
-      const query = args?.behavior != null ? `${args.behavior}` : "All behaviors";
-      const cardStatus = toolStatusToCardStatus(status);
-      let resultSummary: string | undefined;
-      let resultDetails: string | undefined;
-      if (status === "complete" && result != null) {
-        const data = typeof result === "string" ? JSON.parse(result) : result;
-        const err = (data as { error?: string })?.error;
-        const total = (data as { total?: number })?.total ?? 0;
-        const summaries = (data as { summaries?: { behavior?: string; from_name?: string; to_name?: string; count?: number }[] })
-          ?.summaries ?? [];
-        resultSummary = err ?? `Found ${total} interaction${total !== 1 ? "s" : ""}.`;
-        resultDetails =
-          !err && summaries.length > 0
-            ? summaries
-                .slice(0, 8)
-                .map((e) => `${e.behavior ?? ""}: ${e.from_name ?? ""} → ${e.to_name ?? ""} (${e.count ?? 0})`)
-                .join("\n") + (summaries.length > 8 ? "\n…" : "")
-            : undefined;
-      }
+    render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
+      const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Interactions by behavior"
+          title="Query interactions by behavior"
           icon={GitBranch}
           status={cardStatus}
-          query={query || (cardStatus !== "complete" ? "Loading…" : undefined)}
-          resultSummary={resultSummary}
-          resultDetails={resultDetails}
+          hint={hint}
         />
       );
     },
@@ -274,37 +253,14 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
       },
       [onOpenDrilldown, projectContext]
     ),
-    render: ({
-      args,
-      status,
-      result,
-    }: {
-      args: { from_id?: string; to_id?: string };
-      status: string;
-      result: unknown;
-    }) => {
-      const query =
-        args?.from_id != null && args?.to_id != null
-          ? `${args.from_id} → ${args.to_id}`
-          : "";
-      const cardStatus = toolStatusToCardStatus(status);
-      let resultSummary: string | undefined;
-      if (status === "complete" && result != null) {
-        try {
-          const data = typeof result === "string" ? JSON.parse(result) : result;
-          const err = (data as { error?: string })?.error;
-          resultSummary = err ?? (data as { message?: string })?.message ?? "Drawer opened.";
-        } catch {
-          resultSummary = "Drawer opened.";
-        }
-      }
+    render: ({ status, result }: { args: { from_id?: string; to_id?: string }; status: string; result: unknown }) => {
+      const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
           title="Open interaction drilldown"
           icon={PanelRightOpen}
           status={cardStatus}
-          query={query || (cardStatus !== "complete" ? "Loading…" : undefined)}
-          resultSummary={resultSummary}
+          hint={hint}
         />
       );
     },
