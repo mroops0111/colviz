@@ -3,7 +3,7 @@ import "./globals.css";
 import "@copilotkit/react-ui/styles.css";
 import { CopilotKit } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
-import { COLVIZ_SYSTEM_PROMPT } from "@/prompts/system-message";
+import { getColvizSystemPrompt } from "@/prompts/system-message";
 import { COLVIZ_SIDEBAR_WELCOME } from "@/prompts/welcome-message";
 
 export const metadata: Metadata = {
@@ -26,7 +26,7 @@ export default function RootLayout({
           <CopilotSidebar
             defaultOpen={false}
             hitEscapeToClose={false}
-            instructions={COLVIZ_SYSTEM_PROMPT}
+            instructions={getColvizSystemPrompt()}
             labels={{ initial: COLVIZ_SIDEBAR_WELCOME }}
           />
           {children}
