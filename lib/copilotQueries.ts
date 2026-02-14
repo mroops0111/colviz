@@ -5,6 +5,7 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { parsePayloadJson } from "@/lib/payload";
 import type { DrilldownEventRecord } from "@/lib/types";
 
 /** Common filter inputs for edge/event queries */
@@ -112,7 +113,7 @@ function mapInteractionToEvent(it: InteractionWithRelations): DrilldownEventReco
           title: it.rawItem.title,
           content: it.rawItem.contentText,
           contentFormat: it.rawItem.contentFormat,
-          payload: it.rawItem.payloadJson as Record<string, unknown> | null,
+          payload: parsePayloadJson(it.rawItem.payloadJson),
         }
       : null,
   };
