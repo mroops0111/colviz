@@ -26,12 +26,22 @@ export interface BehaviorGroup {
   color: string;
 }
 
+/** Stage definition derived from DB stage actors + interaction date ranges */
+export interface StageInfo {
+  key: string;
+  name: string;
+  startDay: number;
+  endDay: number;
+}
+
 /** Context exposed to Copilot via useCopilotReadable for tool parameter validation and hints */
 export interface ProjectContext {
   sources: string[];
   teams: { id: string; name: string }[];
   members: { id: string; name: string }[];
   behaviors: string[];
+  dataRange?: { totalDays: number };
+  stages?: StageInfo[];
 }
 
 /** Drilldown / EventDrawer filter params (query and API) */

@@ -2,10 +2,12 @@
 
 import React, { useCallback, useMemo } from "react";
 import { useCopilotReadable, useFrontendTool } from "@copilotkit/react-core";
+import { useCopilotChatSuggestions } from "@copilotkit/react-ui";
 import type { Parameter } from "@copilotkit/shared";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
 import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
 import type { ProjectContext } from "../../lib/types";
+import { dateToDayLabel, datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 import type { ToolStatus } from "./ToolExecutionCard";
 
@@ -60,8 +62,8 @@ const getInteractionEventsParameters: Parameter[] = [
   { name: "behavior", type: "string", description: "One of: " + BEHAVIOR_ORDER.join(", "), required: true },
   { name: "from_id", type: "string", description: "Member ID (e.g., M1)", required: true },
   { name: "to_id", type: "string", description: "Member ID (e.g., M2)", required: true },
-  { name: "start", type: "string", description: "Start date (ISO)", required: false },
-  { name: "end", type: "string", description: "End date (ISO)", required: false },
+  { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
+  { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "team", type: "string", description: "Team name (omit for all)", required: false },
 ];
@@ -70,8 +72,8 @@ const listInteractionsParameters: Parameter[] = [
   { name: "behavior", type: "string", description: `Optional filter. One of: ${BEHAVIOR_ORDER.join(", ")}`, required: false },
   { name: "team", type: "string", description: "Team name (omit for all)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
-  { name: "start", type: "string", description: "Start date (ISO)", required: false },
-  { name: "end", type: "string", description: "End date (ISO)", required: false },
+  { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
+  { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
 ];
 
 function validateBehaviorTeamSource(
@@ -150,9 +152,55 @@ function validateOpenDrilldown(
 export interface FrontendToolsProps {
   onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
   projectContext?: ProjectContext;
+  dataMinDate?: string;
 }
 
-export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendToolsProps = {}) {
+/** Convert day-number args (start/end) to ISO date strings for API calls. */
+function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | undefined): Record<string, unknown> {
+  if (!dataMinDate) return args;
+  const result = { ...args };
+  const startDay = args.start != null ? Number(args.start) : null;
+  const endDay = args.end != null ? Number(args.end) : null;
+  if (startDay != null && !Number.isNaN(startDay)) {
+    result.start = dayNumberToDate(startDay, dataMinDate).toISOString();
+  }
+  if (endDay != null && !Number.isNaN(endDay)) {
+    result.end = dayNumberToDate(endDay, dataMinDate).toISOString();
+  }
+  return result;
+}
+
+/** Anonymize date/datetime fields in drilldown events to Day N format. */
+function anonymizeEventDates(events: unknown[], dataMinDate: string | undefined): unknown[] {
+  if (!dataMinDate) return events;
+  return events.map((e) => {
+    const ev = e as Record<string, unknown>;
+    return {
+      ...ev,
+      ...(typeof ev.date === "string" ? { date: dateToDayLabel(ev.date, dataMinDate) } : {}),
+      ...(typeof ev.datetime === "string" ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) } : {}),
+    };
+  });
+}
+
+export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: FrontendToolsProps = {}) {
+  // Default suggestions: cumulative N-day summaries using stage end days as milestones
+  const suggestions = useMemo(() => {
+    const stages = projectContext?.stages ?? [];
+    if (stages.length === 0) return [];
+    return stages.map((s) => ({
+      title: `${s.endDay}-day collaboration summary`,
+      message: `Provide a collaboration summary from Day 1 to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention.`,
+    }));
+  }, [projectContext?.stages]);
+  useCopilotChatSuggestions(
+    {
+      suggestions,
+      available: suggestions.length > 0 ? "before-first-message" : "disabled",
+    },
+    [suggestions],
+  );
+
   const readableValue = useMemo(
     () =>
       projectContext
@@ -161,6 +209,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
             teams: projectContext.teams,
             members: projectContext.members,
             behaviors: projectContext.behaviors,
+            dataRange: projectContext.dataRange,
           }
         : null,
     [projectContext]
@@ -184,12 +233,14 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
       async (args: Record<string, unknown>) => {
         const err = validateGetInteractionEvents(args, projectContext);
         if (err) return JSON.stringify({ error: err, events: [], total: 0 });
-        const res = await fetch(buildDrilldownUrl(args));
+        const apiArgs = convertDayArgs(args, dataMinDate);
+        const res = await fetch(buildDrilldownUrl(apiArgs));
         const json = (await res.json()) as { events?: unknown[]; total?: number; error?: string };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", events: [], total: 0 });
-        return JSON.stringify({ events: json.events ?? [], total: json.total ?? 0 });
+        const events = anonymizeEventDates(json.events ?? [], dataMinDate);
+        return JSON.stringify({ events, total: json.total ?? 0 });
       },
-      [projectContext]
+      [projectContext, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
@@ -213,12 +264,13 @@ export function FrontendTools({ onOpenDrilldown, projectContext }: FrontendTools
       async (args: Record<string, unknown>) => {
         const err = validateListInteractions(args, projectContext);
         if (err) return JSON.stringify({ error: err, summaries: [], total: 0 });
-        const res = await fetch(buildInteractionSummaryUrl(args));
+        const apiArgs = convertDayArgs(args, dataMinDate);
+        const res = await fetch(buildInteractionSummaryUrl(apiArgs));
         const json = (await res.json()) as { summaries?: unknown[]; total?: number; error?: string };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", summaries: [], total: 0 });
         return JSON.stringify({ summaries: json.summaries ?? [], total: json.total ?? 0 });
       },
-      [projectContext]
+      [projectContext, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);

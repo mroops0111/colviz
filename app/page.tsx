@@ -10,7 +10,8 @@ import EventDrawer from "@/components/EventDrawer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { BEHAVIOR_ORDER } from "@/lib/dataProcessor";
-import { CollaborationData, DrilldownFilters, ProjectContext } from "@/lib/types";
+import { CollaborationData, DrilldownFilters, ProjectContext, StageInfo } from "@/lib/types";
+import { totalDaysInRange } from "@/lib/dayLabel";
 
 export default function Home() {
   const [data, setData] = useState<CollaborationData[]>([]);
@@ -19,6 +20,7 @@ export default function Home() {
   const [selectedTeams, setSelectedTeams] = useState<Set<string>>(new Set());
   const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [showNames, setShowNames] = useState(true);
+  const [stages, setStages] = useState<StageInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // Drill-down drawer state
@@ -57,8 +59,16 @@ export default function Home() {
     const members = Array.from(memberMap.entries())
       .map(([id, name]) => ({ id, name }))
       .sort((a, b) => a.id.localeCompare(b.id));
-    return { sources, teams, members, behaviors: [...BEHAVIOR_ORDER] };
-  }, [data]);
+    return {
+      sources, teams, members, behaviors: [...BEHAVIOR_ORDER],
+      dataRange: dataRange
+        ? { totalDays: totalDaysInRange(dataRange[0].toISOString(), dataRange[1].toISOString()) }
+        : undefined,
+      stages: stages.length > 0 ? stages : undefined,
+    };
+  }, [data, dataRange, stages]);
+
+  const dataMinDate = dataRange?.[0]?.toISOString();
 
   const handleDataLoaded = useCallback((loadedData: CollaborationData[]) => {
     setData(loadedData);
@@ -87,11 +97,19 @@ export default function Home() {
       setError(null);
 
       try {
-        const res = await fetch("/api/interactions?dataset=default");
-        if (!res.ok) throw new Error("Failed to load interactions from DB");
-        const json = (await res.json()) as { data?: CollaborationData[] };
+        const [interactionsRes, stagesRes] = await Promise.all([
+          fetch("/api/interactions?dataset=default"),
+          fetch("/api/stages?dataset=default"),
+        ]);
+        if (!interactionsRes.ok) throw new Error("Failed to load interactions from DB");
+        const json = (await interactionsRes.json()) as { data?: CollaborationData[] };
         const parsed = Array.isArray(json.data) ? json.data : [];
         handleDataLoaded(parsed);
+
+        if (stagesRes.ok) {
+          const stagesJson = (await stagesRes.json()) as { stages?: StageInfo[] };
+          setStages(stagesJson.stages ?? []);
+        }
       } catch (err) {
         setError("Failed to load data from local DB. Import data first, or check DB config.");
       }
@@ -265,9 +283,10 @@ export default function Home() {
           filters={drilldownFilters}
           showNames={showNames}
           datasetName="default"
+          dataMinDate={dataMinDate}
         />
 
-        <FrontendTools projectContext={projectContext} onOpenDrilldown={handleOpenDrilldown} />
+        <FrontendTools projectContext={projectContext} onOpenDrilldown={handleOpenDrilldown} dataMinDate={dataMinDate} />
       </div>
     </div>
   );

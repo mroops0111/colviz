@@ -17,6 +17,7 @@ import { Paperclip } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { normalizePayloadFiles } from "@/lib/payload";
 import { BEHAVIOR_COLORS } from "@/lib/dataProcessor";
+import { dateToDayLabel, datetimeToDayLabel } from "@/lib/dayLabel";
 import type { DrilldownFilters, DrilldownEventRecord } from "@/lib/types";
 import type { ChannelMessage } from "@/app/api/channel-messages/route";
 
@@ -121,8 +122,9 @@ function MessageContent({ content }: { content: string }) {
   );
 }
 
-/** Format datetime for thread list: 2019-06-07 xx:xx:xx */
-function formatThreadTime(iso: string): string {
+/** Format datetime for thread list as "Day N HH:mm:ss" */
+function formatThreadTime(iso: string, dataMinDate?: string): string {
+  if (dataMinDate) return datetimeToDayLabel(iso, dataMinDate);
   const d = new Date(iso);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -142,11 +144,10 @@ interface ChannelViewPanelProps {
   onThreadFilterChange: (threadId: string | null) => void;
   onClose: () => void;
   getBehaviorColor: (behavior: string) => string;
-  /** When set, scroll the message list to this message id after load (e.g. the event that opened the panel). */
   scrollToMessageId: string | null;
   onScrolledToMessage: () => void;
-  /** When false, show author ID instead of name (matches Event Drawer "ID only" setting). */
   showNames: boolean;
+  dataMinDate?: string;
 }
 
 const CHANNEL_MSG_ID_PREFIX = "channel-msg-";
@@ -164,6 +165,7 @@ function ChannelViewPanel({
   scrollToMessageId,
   onScrolledToMessage,
   showNames,
+  dataMinDate,
 }: ChannelViewPanelProps) {
   const hasScrolledRef = useRef(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -268,7 +270,7 @@ function ChannelViewPanel({
                     >
                       <div className="flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground mb-1">
                         <span className="font-semibold text-foreground">{showNames ? msg.author : (msg.authorId ?? msg.author)}</span>
-                        <span>{formatThreadTime(msg.occurredAt)}</span>
+                        <span>{formatThreadTime(msg.occurredAt, dataMinDate)}</span>
                         {msg.behavior && (
                           <span
                             className="px-1.5 py-0.5 rounded text-white font-medium"
@@ -325,6 +327,7 @@ interface EventCardProps {
   isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onOpenChannelMessages: (channel: string, scrollToMessageId?: string | null) => void;
+  dataMinDate?: string;
 }
 
 function EventCard({
@@ -333,6 +336,7 @@ function EventCard({
   isExpanded,
   onToggleExpand,
   onOpenChannelMessages,
+  dataMinDate,
 }: EventCardProps) {
   return (
     <Card className="text-sm">
@@ -344,7 +348,7 @@ function EventCard({
           <span>
             {showNames ? event.from : event.from_id} → {showNames ? event.to : event.to_id}
           </span>
-          <span className="text-xs text-muted-foreground">{event.date}</span>
+          <span className="text-xs text-muted-foreground">{dataMinDate ? dateToDayLabel(event.date, dataMinDate) : event.date}</span>
         </CardTitle>
         <div className="flex gap-2 text-xs mt-1">
           <span className="px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded font-medium">
@@ -456,6 +460,7 @@ interface EventDrawerProps {
   filters: DrilldownFilters;
   showNames?: boolean;
   datasetName?: string;
+  dataMinDate?: string;
 }
 
 export default function EventDrawer({
@@ -464,6 +469,7 @@ export default function EventDrawer({
   filters,
   showNames = true,
   datasetName = "default",
+  dataMinDate,
 }: EventDrawerProps) {
   const [events, setEvents] = useState<DrilldownEventRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -619,6 +625,7 @@ export default function EventDrawer({
                 isExpanded={expandedIds.has(event.id)}
                 onToggleExpand={toggleExpand}
                 onOpenChannelMessages={openChannelMessages}
+                dataMinDate={dataMinDate}
               />
             ))}
 
@@ -695,6 +702,7 @@ export default function EventDrawer({
             scrollToMessageId={channelView.scrollToMessageId}
             onScrolledToMessage={clearChannelScrollTarget}
             showNames={showNames}
+            dataMinDate={dataMinDate}
           />
         </div>
       </div>

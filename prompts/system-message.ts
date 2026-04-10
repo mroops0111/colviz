@@ -31,7 +31,7 @@ ColViz dataset context (sources, teams, members with id and name, behaviors) is 
 
 # Hint
 
-- Today is {{ current_date }}.
+- Dates in this dataset are anonymized as "Day N" format (Day 1 = the earliest date in the dataset). The total number of days is provided in the dataset context. When filtering by date range, use day numbers (e.g. start=1, end=10).
 - You MUST consider the context and the data provided, and DO NOT make up any information.
 - Consider each **source**'s reasonable usage purpose when judging behavior and interaction patterns (e.g. what a given source is typically used for).
 - Behavior labels in this database are **human-judged**. You may suggest interpretations or recommendations based on common sense about how sources are used, while acknowledging the judgment nature of the data.
@@ -42,13 +42,9 @@ ColViz dataset context (sources, teams, members with id and name, behaviors) is 
 Use markdown syntax with well-organized tables and lists to present the information. Respond in English or Traditional Chinese, depending on the user's query.
 `;
 
-/** Build system prompt with placeholders filled (e.g. current_date). Call this when passing instructions. */
-export function getColvizSystemPrompt(options?: { currentDate?: string }): string {
-  const currentDate =
-    options?.currentDate ??
-    new Date().toLocaleDateString("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" });
-  return COLVIZ_SYSTEM_PROMPT_TEMPLATE.replace(/\{\{\s*current_date\s*\}\}/g, currentDate);
+/** Build system prompt. Call this when passing instructions. */
+export function getColvizSystemPrompt(): string {
+  return COLVIZ_SYSTEM_PROMPT_TEMPLATE;
 }
 
-/** Raw template with {{ current_date }} placeholder; prefer getColvizSystemPrompt() for runtime use. */
 export const COLVIZ_SYSTEM_PROMPT = getColvizSystemPrompt();
