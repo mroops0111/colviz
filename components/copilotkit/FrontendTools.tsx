@@ -66,6 +66,7 @@ const getInteractionEventsParameters: Parameter[] = [
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "team", type: "string", description: "Team name (omit for all)", required: false },
+  { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
 
 const listInteractionsParameters: Parameter[] = [
@@ -74,6 +75,7 @@ const listInteractionsParameters: Parameter[] = [
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
+  { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
 
 function validateBehaviorTeamSource(
@@ -170,17 +172,47 @@ function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | und
   return result;
 }
 
-/** Anonymize date/datetime fields in drilldown events to Day N format. */
-function anonymizeEventDates(events: unknown[], dataMinDate: string | undefined): unknown[] {
-  if (!dataMinDate) return events;
-  return events.map((e) => {
-    const ev = e as Record<string, unknown>;
-    return {
-      ...ev,
-      ...(typeof ev.date === "string" ? { date: dateToDayLabel(ev.date, dataMinDate) } : {}),
-      ...(typeof ev.datetime === "string" ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) } : {}),
-    };
-  });
+/** Build a name→id map from project context members and teams (mirrors DatasetContext.name_map in api_client.py). */
+function buildNameMap(ctx: ProjectContext | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!ctx) return map;
+  for (const m of ctx.members) map.set(m.name, m.id);
+  for (const t of ctx.teams) map.set(t.name, t.id);
+  return map;
+}
+
+function replaceWithId(value: unknown, nameMap: Map<string, string>): unknown {
+  if (typeof value === "string") return nameMap.get(value) ?? value;
+  if (Array.isArray(value)) return value.map((v) => replaceWithId(v, nameMap));
+  return value;
+}
+
+const PAYLOAD_NAME_KEYS = new Set(["members", "team", "teams"]);
+
+/** Replace name fields in rawItem.payload with actor IDs (mirrors _anonymize_event in api_client.py). */
+function anonymizePayload(event: Record<string, unknown>, nameMap: Map<string, string>): Record<string, unknown> {
+  const rawItem = event.rawItem;
+  if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return event;
+  const ri = rawItem as Record<string, unknown>;
+  const payload = ri.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return event;
+  const cleanPayload = Object.fromEntries(
+    Object.entries(payload as Record<string, unknown>).map(([k, v]) =>
+      PAYLOAD_NAME_KEYS.has(k) ? [k, replaceWithId(v, nameMap)] : [k, v]
+    )
+  );
+  return { ...event, rawItem: { ...ri, payload: cleanPayload } };
+}
+
+/** Anonymize a single drilldown event: strip names, replace payload IDs, convert dates to Day N. */
+function anonymizeEvent(e: unknown, dataMinDate: string | undefined, nameMap: Map<string, string>): Record<string, unknown> {
+  const { from, to, ...ev } = e as Record<string, unknown>;
+  const dated = {
+    ...ev,
+    ...(dataMinDate && typeof ev.date === "string" ? { date: dateToDayLabel(ev.date, dataMinDate) } : {}),
+    ...(dataMinDate && typeof ev.datetime === "string" ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) } : {}),
+  };
+  return anonymizePayload(dated, nameMap);
 }
 
 export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: FrontendToolsProps = {}) {
@@ -237,7 +269,8 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
         const res = await fetch(buildDrilldownUrl(apiArgs));
         const json = (await res.json()) as { events?: unknown[]; total?: number; error?: string };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", events: [], total: 0 });
-        const events = anonymizeEventDates(json.events ?? [], dataMinDate);
+        const nameMap = buildNameMap(projectContext);
+        const events = (json.events ?? []).map((e) => anonymizeEvent(e, dataMinDate, nameMap));
         return JSON.stringify({ events, total: json.total ?? 0 });
       },
       [projectContext, dataMinDate]
@@ -268,7 +301,12 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
         const res = await fetch(buildInteractionSummaryUrl(apiArgs));
         const json = (await res.json()) as { summaries?: unknown[]; total?: number; error?: string };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", summaries: [], total: 0 });
-        return JSON.stringify({ summaries: json.summaries ?? [], total: json.total ?? 0 });
+        // Strip real names (from_name/to_name) from summaries
+        const summaries = (json.summaries ?? []).map((s) => {
+          const { from_name, to_name, ...rest } = s as Record<string, unknown>;
+          return rest;
+        });
+        return JSON.stringify({ summaries, total: json.total ?? 0 });
       },
       [projectContext, dataMinDate]
     ),

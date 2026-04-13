@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
+import { calcTotalPages, parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
 import { queryEdgeEvents } from "@/lib/copilotQueries";
 
 export const runtime = "nodejs";
@@ -54,5 +54,6 @@ export async function GET(request: Request) {
     total,
     limit,
     offset,
+    total_pages: calcTotalPages(total, limit),
   });
 }
