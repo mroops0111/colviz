@@ -25,3 +25,7 @@ export function parseOptionalDate(value: string | null): Date | null {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? null : d;
 }
+
+export function calcTotalPages(total: number, limit: number): number {
+  return limit > 0 ? Math.ceil(total / limit) : 0;
+}

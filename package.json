@@ -9,9 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@copilotkit/react-core": "^1.51.3",
-    "@copilotkit/react-ui": "^1.51.3",
-    "@copilotkit/runtime": "^1.51.3",
+    "@copilotkit/react-core": "^1.54.1",
+    "@copilotkit/react-textarea": "1.54.1",
+    "@copilotkit/react-ui": "^1.54.1",
+    "@copilotkit/runtime": "^1.54.1",
     "@copilotkit/shared": "^1.51.3",
     "@prisma/client": "^6.19.2",
     "@radix-ui/react-checkbox": "^1.3.3",

@@ -1,0 +1,58 @@
+base_url: http://localhost:3000
+output_dir: results
+batch_size: 5
+delay_between_runs: 1.0
+
+runs:
+  - id: s1-summary
+    question: Provide the collaboration summary.
+    model: gpt-5-mini
+    dataset: default
+    day_start: 4
+    day_end: 27
+    teams: [T1, T2, T3, S1]
+
+  - id: s2-summary
+    question: Provide the collaboration summary.
+    model: gpt-5-mini
+    dataset: default
+    day_start: 18
+    day_end: 33
+    teams: [T4, T5, S2]
+
+  - id: s3-summary
+    question: Provide the collaboration summary.
+    model: gpt-5-mini
+    dataset: default
+    day_start: 39
+    day_end: 61
+    teams: [T6, T7, T8, T9, S3]
+
+  - id: s1-summary-awareness
+    question: Provide the interaction event analysis in details.
+    model: gpt-5.4
+    dataset: default
+    day_start: 4
+    day_end: 27
+    teams: [T1, T2, T3, S1]
+    behavior: awareness
+    source: mattermost
+    resume_from: s1-summary
+
+  - id: awareness-m2-m3
+    question: Provide the behavior summary.
+    model: gpt-5-mini
+    dataset: default
+    behavior: awareness
+    pairs:
+      - {from_id: M2, to_id: M3}
+      - {from_id: M3, to_id: M2}
+
+  - id: awareness-m7-m8
+    question: Provide the behavior summary.
+    model: gpt-5-mini
+    dataset: default
+    behavior: awareness
+    pairs:
+      - {from_id: M7, to_id: M8}
+      - {from_id: M8, to_id: M7}

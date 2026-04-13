@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
+import { calcTotalPages, parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
 import { queryListInteractionSummaries } from "@/lib/copilotQueries";
 
 export const runtime = "nodejs";
@@ -39,5 +39,5 @@ export async function GET(request: Request) {
     limit
   );
 
-  return NextResponse.json({ dataset: datasetName, summaries, total, limit });
+  return NextResponse.json({ dataset: datasetName, summaries, total, limit, total_pages: calcTotalPages(total, limit) });
 }

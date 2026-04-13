@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import { dateToDayLabel } from "@/lib/dayLabel";
 
 interface TimeRangeFilterProps {
   minDate: Date;
@@ -21,7 +22,7 @@ export default function TimeRangeFilter({
   onRangeChange,
 }: TimeRangeFilterProps) {
   const formatDate = (date: Date): string => {
-    return date.toISOString().split("T")[0];
+    return dateToDayLabel(date.toISOString(), minDate.toISOString());
   };
 
   // Convert dates to timestamps for slider
