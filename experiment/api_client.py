@@ -108,6 +108,16 @@ class ApiClient:
     async def get_min_date(self, dataset: str = "default") -> str | None:
         return (await self._get_context(dataset)).min_date
 
+    async def get_stages(self, dataset: str = "default") -> list[dict]:
+        """GET /api/stages — returns stage day ranges derived from DB."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(
+                f"{self.base_url}/api/stages",
+                params={"dataset": dataset},
+            )
+            r.raise_for_status()
+            return r.json().get("stages", [])
+
     # ── tool endpoints ────────────────────────────────────────────────────────
 
     async def list_interactions(

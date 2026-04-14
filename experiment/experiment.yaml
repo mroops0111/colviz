@@ -8,7 +8,7 @@ runs:
     question: Provide the collaboration summary.
     model: gpt-5-mini
     dataset: default
-    day_start: 4
+    day_start: 1
     day_end: 27
     teams: [T1, T2, T3, S1]
 
@@ -24,15 +24,15 @@ runs:
     question: Provide the collaboration summary.
     model: gpt-5-mini
     dataset: default
-    day_start: 39
-    day_end: 61
+    day_start: 35
+    day_end: 70
     teams: [T6, T7, T8, T9, S3]
 
   - id: s1-summary-awareness
     question: Provide the interaction event analysis in details.
     model: gpt-5.4
     dataset: default
-    day_start: 4
+    day_start: 1
     day_end: 27
     teams: [T1, T2, T3, S1]
     behavior: awareness
