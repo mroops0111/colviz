@@ -221,8 +221,8 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
     const stages = projectContext?.stages ?? [];
     if (stages.length === 0) return [];
     return stages.map((s) => ({
-      title: `${s.endDay}-day collaboration summary`,
-      message: `Provide a collaboration summary from Day 1 to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention.`,
+      title: `${s.name} collaboration summary`,
+      message: `Provide a collaboration summary from Day ${s.startDay} to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention.`,
     }));
   }, [projectContext?.stages]);
   useCopilotChatSuggestions(

@@ -37,62 +37,76 @@ export async function GET(request: Request) {
   ).getTime();
   const msPerDay = 1000 * 60 * 60 * 24;
 
-  // Query stage actors and their interaction date ranges
-  const stageActors = await prisma.actor.findMany({
-    where: { datasetId: dataset.id, actorType: "stage" },
-    select: {
-      id: true,
-      actorKey: true,
-      name: true,
-      teamInteractions: {
-        select: { occurredAt: true },
-        orderBy: { occurredAt: "asc" },
-        take: 1,
-      },
-    },
+  // Fetch all stage and team actors
+  const allGroupActors = await prisma.actor.findMany({
+    where: { datasetId: dataset.id, actorType: { in: ["stage", "team"] } },
+    select: { id: true, actorKey: true, name: true, actorType: true },
   });
+  const stageActors = allGroupActors.filter((a) => a.actorType === "stage");
+  const teamActors = allGroupActors.filter((a) => a.actorType === "team");
 
-  // For max date, query separately (Prisma doesn't support both asc take-1 and desc take-1 in one relation)
-  const stages = await Promise.all(
-    stageActors.map(async (actor) => {
-      const minInteraction = actor.teamInteractions[0];
-      const maxInteraction = await prisma.interaction.findFirst({
-        where: { teamId: actor.id, datasetId: dataset.id },
-        orderBy: { occurredAt: "desc" },
-        select: { occurredAt: true },
-      });
+  // Get date ranges for every group actor in one query
+  const dateRanges: { team_id: string; min_at: bigint; max_at: bigint }[] =
+    await prisma.$queryRaw`
+      SELECT team_id, MIN(occurred_at) AS min_at, MAX(occurred_at) AS max_at
+        FROM interactions
+       WHERE dataset_id = ${dataset.id} AND team_id IS NOT NULL
+       GROUP BY team_id
+    `;
 
-      if (!minInteraction || !maxInteraction) return null;
+  const toDayNum = (ts: bigint) => {
+    const dt = new Date(Number(ts));
+    return (
+      Math.round(
+        (new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime() - minTime) / msPerDay,
+      ) + 1
+    );
+  };
 
-      const startDay =
-        Math.round(
-          (new Date(
-            minInteraction.occurredAt.getFullYear(),
-            minInteraction.occurredAt.getMonth(),
-            minInteraction.occurredAt.getDate(),
-          ).getTime() -
-            minTime) /
-            msPerDay,
-        ) + 1;
-      const endDay =
-        Math.round(
-          (new Date(
-            maxInteraction.occurredAt.getFullYear(),
-            maxInteraction.occurredAt.getMonth(),
-            maxInteraction.occurredAt.getDate(),
-          ).getTime() -
-            minTime) /
-            msPerDay,
-        ) + 1;
+  const rangeMap = new Map<string, { minDay: number; maxDay: number }>();
+  for (const row of dateRanges) {
+    rangeMap.set(row.team_id, { minDay: toDayNum(row.min_at), maxDay: toDayNum(row.max_at) });
+  }
 
-      return {
-        key: actor.actorKey,
-        name: actor.name,
-        startDay,
-        endDay,
-      };
-    }),
-  );
+  // Match each team to the stage with the most temporal overlap
+  const stageChildIds = new Map<string, string[]>();
+  for (const s of stageActors) stageChildIds.set(s.id, []);
+
+  for (const team of teamActors) {
+    const tr = rangeMap.get(team.id);
+    if (!tr) continue;
+    let bestId = "";
+    let bestOverlap = 0;
+    for (const stage of stageActors) {
+      const sr = rangeMap.get(stage.id);
+      if (!sr) continue;
+      const overlap = Math.max(0, Math.min(tr.maxDay, sr.maxDay) - Math.max(tr.minDay, sr.minDay) + 1);
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        bestId = stage.id;
+      }
+    }
+    if (bestId) stageChildIds.get(bestId)!.push(team.id);
+  }
+
+  // Compute final stage ranges (stage + child teams)
+  const stages = stageActors.map((actor) => {
+    const childIds = stageChildIds.get(actor.id) ?? [];
+    const allIds = [actor.id, ...childIds];
+
+    let startDay = Infinity;
+    let endDay = -Infinity;
+    for (const id of allIds) {
+      const r = rangeMap.get(id);
+      if (r) {
+        startDay = Math.min(startDay, r.minDay);
+        endDay = Math.max(endDay, r.maxDay);
+      }
+    }
+    if (startDay === Infinity) return null;
+
+    return { key: actor.actorKey, name: actor.name, startDay, endDay };
+  });
 
   const validStages = stages
     .filter(Boolean)
