@@ -4,7 +4,9 @@ import { useState, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { dateToDayLabel } from "@/lib/dayLabel";
+import { dateToDayLabel, totalDaysInRange } from "@/lib/dayLabel";
+import BehaviorTrendChart from "@/components/BehaviorTrendChart";
+import { CollaborationData } from "@/lib/types";
 
 interface TimeRangeFilterProps {
   minDate: Date;
@@ -12,6 +14,15 @@ interface TimeRangeFilterProps {
   startDate: Date;
   endDate: Date;
   onRangeChange: (start: Date, end: Date) => void;
+  /**
+   * Data already filtered by team & source (but NOT by the date range).
+   * Used to render the per-day behavior distribution mini-chart above the slider.
+   */
+  chartData?: CollaborationData[];
+  /** Behaviors to render as separate lines, in display order. */
+  behaviors?: readonly string[];
+  /** Color for each behavior key. */
+  behaviorColors?: Record<string, string>;
 }
 
 export default function TimeRangeFilter({
@@ -20,6 +31,9 @@ export default function TimeRangeFilter({
   startDate,
   endDate,
   onRangeChange,
+  chartData,
+  behaviors,
+  behaviorColors,
 }: TimeRangeFilterProps) {
   const formatDate = (date: Date): string => {
     return dateToDayLabel(date.toISOString(), minDate.toISOString());
@@ -58,12 +72,15 @@ export default function TimeRangeFilter({
   const displayStartDate = new Date(sliderValues[0]);
   const displayEndDate = new Date(sliderValues[1]);
 
-  // Calculate the number of days in the range
-  const totalDays = Math.ceil(
-    (maxTimestamp - minTimestamp) / (1000 * 60 * 60 * 24)
+  // Day labels are 1-indexed and inclusive (Day 1..Day N), so the count must
+  // include both endpoints. e.g. Day 1 to Day 70 is 70 days, not 69.
+  const totalDays = totalDaysInRange(
+    minDate.toISOString(),
+    maxDate.toISOString()
   );
-  const selectedDays = Math.ceil(
-    (sliderValues[1] - sliderValues[0]) / (1000 * 60 * 60 * 24)
+  const selectedDays = totalDaysInRange(
+    displayStartDate.toISOString(),
+    displayEndDate.toISOString()
   );
 
   return (
@@ -86,6 +103,17 @@ export default function TimeRangeFilter({
       </div>
 
       <div className="space-y-3">
+        {chartData && behaviors && behaviors.length > 0 && (
+          <BehaviorTrendChart
+            data={chartData}
+            minDate={minDate}
+            maxDate={maxDate}
+            selectedStart={displayStartDate}
+            selectedEnd={displayEndDate}
+            behaviors={behaviors}
+            colors={behaviorColors ?? {}}
+          />
+        )}
         <div className="space-y-2">
           <Label className="text-xs">Range</Label>
           <div className="px-1">

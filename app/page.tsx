@@ -9,7 +9,7 @@ import SourceFilter from "@/components/SourceFilter";
 import EventDrawer from "@/components/EventDrawer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { BEHAVIOR_ORDER } from "@/lib/dataProcessor";
+import { BEHAVIOR_ORDER, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
 import { CollaborationData, DrilldownFilters, ProjectContext, StageInfo } from "@/lib/types";
 import { totalDaysInRange } from "@/lib/dayLabel";
 
@@ -41,6 +41,16 @@ export default function Home() {
       return inDateRange && inTeamFilter && inSourceFilter;
     });
   }, [data, selectedRange, selectedTeams, selectedSources]);
+
+  // Data filtered by team & source only (NOT by day range).
+  // Used by the behavior trend mini-chart so its x-axis can stay anchored to
+  // the full Day 1..Day N range while the day filter only moves marker lines.
+  const trendChartData = useMemo(() => {
+    if (selectedTeams.size === 0 || selectedSources.size === 0) return [];
+    return data.filter(
+      (d) => selectedTeams.has(d.team_id) && selectedSources.has(d.source)
+    );
+  }, [data, selectedTeams, selectedSources]);
 
   // Derive project context once data is loaded (sources, teams, members, behaviors)
   const projectContext = useMemo((): ProjectContext | undefined => {
@@ -212,6 +222,9 @@ export default function Home() {
                     startDate={selectedRange[0]}
                     endDate={selectedRange[1]}
                     onRangeChange={handleDateRangeChange}
+                    chartData={trendChartData}
+                    behaviors={BEHAVIOR_ORDER}
+                    behaviorColors={BEHAVIOR_COLORS}
                   />
                 </CardContent>
               </Card>
