@@ -1,40 +1,25 @@
 "use client";
 
-import React, { useCallback, useMemo } from "react";
-import { useCopilotReadable, useFrontendTool } from "@copilotkit/react-core";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  useCopilotReadable,
+  useFrontendTool,
+  useCopilotChatInternal,
+} from "@copilotkit/react-core";
+import type { Message as AGUIMessage, Parameter } from "@copilotkit/shared";
 import { useCopilotChatSuggestions } from "@copilotkit/react-ui";
-import type { Parameter } from "@copilotkit/shared";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
 import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
 import type { ProjectContext } from "../../lib/types";
 import { dateToDayLabel, datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
+import { getColvizSystemPrompt } from "../../prompts/system-message";
 import { ToolExecutionCard } from "./ToolExecutionCard";
-import type { ToolStatus } from "./ToolExecutionCard";
+import { resolveCardStatusAndHint } from "./toolCardStatus";
+import { SaveReportCard, buildEventsFromMessages } from "./SaveReportCard";
 
-function toolStatusToCardStatus(status: string): ToolStatus {
-  return status === "complete" ? "complete" : status === "executing" ? "executing" : "inProgress";
-}
-
-/** Resolve card status and hint from tool status + result; treat result with error field as failed. */
-function resolveCardStatusAndHint(status: string, result: unknown): { cardStatus: ToolStatus; hint: string } {
-  const baseStatus = toolStatusToCardStatus(status);
-  if (baseStatus !== "complete") {
-    return { cardStatus: baseStatus, hint: "Running…" };
-  }
-  let hasError = false;
-  if (result != null) {
-    try {
-      const data = typeof result === "string" ? JSON.parse(result) : result;
-      hasError = typeof (data as { error?: string })?.error === "string";
-    } catch {
-      // ignore parse errors
-    }
-  }
-  if (hasError) {
-    return { cardStatus: "error", hint: "Failed" };
-  }
-  return { cardStatus: "complete", hint: "Done" };
-}
+// -----------------------------------------------------------------------------
+// URL builders
+// -----------------------------------------------------------------------------
 
 function appendParams(params: URLSearchParams, args: Record<string, unknown>, keys: string[]) {
   for (const k of keys) {
@@ -58,6 +43,10 @@ function buildInteractionSummaryUrl(args: Record<string, unknown>): string {
   return `/api/interaction-summary?${p.toString()}`;
 }
 
+// -----------------------------------------------------------------------------
+// Tool parameter schemas
+// -----------------------------------------------------------------------------
+
 const getInteractionEventsParameters: Parameter[] = [
   { name: "behavior", type: "string", description: "One of: " + BEHAVIOR_ORDER.join(", "), required: true },
   { name: "from_id", type: "string", description: "Member ID (e.g., M1)", required: true },
@@ -77,6 +66,10 @@ const listInteractionsParameters: Parameter[] = [
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
   { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
+
+// -----------------------------------------------------------------------------
+// Argument validation
+// -----------------------------------------------------------------------------
 
 function validateBehaviorTeamSource(
   args: Record<string, unknown>,
@@ -111,16 +104,13 @@ function actorIdInSet(id: string, allowedIds: Set<string>): boolean {
   return [...allowedIds].some((a) => a.toLowerCase() === lower);
 }
 
-function memberIdError(id: string, allowedIds: Set<string>, param: "from_id" | "to_id" = "from_id"): string {
+function memberIdError(
+  id: string,
+  allowedIds: Set<string>,
+  param: "from_id" | "to_id" = "from_id"
+): string {
   const ids = Array.from(allowedIds).slice(0, 20);
   return `Invalid ${param} "${id}". Use a member ID (e.g. ${ids.join(", ")}${allowedIds.size > 20 ? "…" : ""}).`;
-}
-
-function validateListInteractions(
-  args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
-): string | null {
-  return validateBehaviorTeamSource(args, ctx);
 }
 
 function validateGetInteractionEvents(
@@ -151,14 +141,15 @@ function validateOpenDrilldown(
   return null;
 }
 
-export interface FrontendToolsProps {
-  onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
-  projectContext?: ProjectContext;
-  dataMinDate?: string;
-}
+// -----------------------------------------------------------------------------
+// Day-number → ISO conversion + payload anonymization
+// -----------------------------------------------------------------------------
 
 /** Convert day-number args (start/end) to ISO date strings for API calls. */
-function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | undefined): Record<string, unknown> {
+function convertDayArgs(
+  args: Record<string, unknown>,
+  dataMinDate: string | undefined
+): Record<string, unknown> {
   if (!dataMinDate) return args;
   const result = { ...args };
   const startDay = args.start != null ? Number(args.start) : null;
@@ -172,7 +163,7 @@ function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | und
   return result;
 }
 
-/** Build a name→id map from project context members and teams (mirrors DatasetContext.name_map in api_client.py). */
+/** Build a name→id map from project context (mirrors DatasetContext.name_map in api_client.py). */
 function buildNameMap(ctx: ProjectContext | undefined): Map<string, string> {
   const map = new Map<string, string>();
   if (!ctx) return map;
@@ -190,7 +181,10 @@ function replaceWithId(value: unknown, nameMap: Map<string, string>): unknown {
 const PAYLOAD_NAME_KEYS = new Set(["members", "team", "teams"]);
 
 /** Replace name fields in rawItem.payload with actor IDs (mirrors _anonymize_event in api_client.py). */
-function anonymizePayload(event: Record<string, unknown>, nameMap: Map<string, string>): Record<string, unknown> {
+function anonymizePayload(
+  event: Record<string, unknown>,
+  nameMap: Map<string, string>
+): Record<string, unknown> {
   const rawItem = event.rawItem;
   if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return event;
   const ri = rawItem as Record<string, unknown>;
@@ -205,24 +199,72 @@ function anonymizePayload(event: Record<string, unknown>, nameMap: Map<string, s
 }
 
 /** Anonymize a single drilldown event: strip names, replace payload IDs, convert dates to Day N. */
-function anonymizeEvent(e: unknown, dataMinDate: string | undefined, nameMap: Map<string, string>): Record<string, unknown> {
+function anonymizeEvent(
+  e: unknown,
+  dataMinDate: string | undefined,
+  nameMap: Map<string, string>
+): Record<string, unknown> {
   const { from, to, ...ev } = e as Record<string, unknown>;
+  void from;
+  void to;
   const dated = {
     ...ev,
-    ...(dataMinDate && typeof ev.date === "string" ? { date: dateToDayLabel(ev.date, dataMinDate) } : {}),
-    ...(dataMinDate && typeof ev.datetime === "string" ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) } : {}),
+    ...(dataMinDate && typeof ev.date === "string"
+      ? { date: dateToDayLabel(ev.date, dataMinDate) }
+      : {}),
+    ...(dataMinDate && typeof ev.datetime === "string"
+      ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) }
+      : {}),
   };
   return anonymizePayload(dated, nameMap);
 }
 
-export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: FrontendToolsProps = {}) {
+// -----------------------------------------------------------------------------
+// Component
+// -----------------------------------------------------------------------------
+
+export interface FrontendToolsProps {
+  onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
+  projectContext?: ProjectContext;
+  dataMinDate?: string;
+}
+
+export function FrontendTools({
+  onOpenDrilldown,
+  projectContext,
+  dataMinDate,
+}: FrontendToolsProps = {}) {
+  // NOTE: deliberately use the *internal* hook here. In this version of
+  // CopilotKit the public `useCopilotMessagesContext` returns a state slot
+  // that nothing populates (the live chat log lives on the agent), and
+  // `useCopilotChat` strips the `messages` field from its return type. The
+  // internal hook is the only OSS-friendly way to read AG-UI messages + the
+  // current threadId in a single reactive subscription.
+  const chat = useCopilotChatInternal() as unknown as {
+    messages: AGUIMessage[];
+    threadId?: string;
+  };
+
+  // useFrontendTool only captures the initial handler reference, so the
+  // handler closure can otherwise see a stale `messages` array. Mirror the
+  // latest values into refs on every render so the handler always reads
+  // them fresh.
+  const messagesRef = useRef<AGUIMessage[]>(chat.messages);
+  const threadIdRef = useRef<string | undefined>(chat.threadId);
+  useEffect(() => {
+    messagesRef.current = chat.messages;
+  }, [chat.messages]);
+  useEffect(() => {
+    threadIdRef.current = chat.threadId;
+  }, [chat.threadId]);
+
   // Default suggestions: cumulative N-day summaries using stage end days as milestones
   const suggestions = useMemo(() => {
     const stages = projectContext?.stages ?? [];
     if (stages.length === 0) return [];
     return stages.map((s) => ({
       title: `${s.name} collaboration summary`,
-      message: `Provide a collaboration summary from Day ${s.startDay} to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention.`,
+      message: `Provide a collaboration summary from Day ${s.startDay} to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention. Save the analysis to disk directly and do not repeat the analysis.`,
     }));
   }, [projectContext?.stages]);
   useCopilotChatSuggestions(
@@ -230,7 +272,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
       suggestions,
       available: suggestions.length > 0 ? "before-first-message" : "disabled",
     },
-    [suggestions],
+    [suggestions]
   );
 
   const readableValue = useMemo(
@@ -295,7 +337,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
     parameters: listInteractionsParameters,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
-        const err = validateListInteractions(args, projectContext);
+        const err = validateBehaviorTeamSource(args, projectContext);
         if (err) return JSON.stringify({ error: err, summaries: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
         const res = await fetch(buildInteractionSummaryUrl(apiArgs));
@@ -304,6 +346,8 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
         // Strip real names (from_name/to_name) from summaries
         const summaries = (json.summaries ?? []).map((s) => {
           const { from_name, to_name, ...rest } = s as Record<string, unknown>;
+          void from_name;
+          void to_name;
           return rest;
         });
         return JSON.stringify({ summaries, total: json.total ?? 0 });
@@ -354,6 +398,69 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
         />
       );
     },
+  });
+
+  useFrontendTool({
+    name: "saveAnalysisReport",
+    description:
+      "Persist the full analysis answer for the current user question to a markdown report on disk. " +
+      "MUST be called instead of replying with the analysis inline in the chat. " +
+      "The frontend automatically attaches the system prompt, the user prompt, and any prior tool calls/results from this conversation; " +
+      "you only need to provide the final analysis content as the `answer` parameter.",
+    parameters: [
+      {
+        name: "answer",
+        type: "string",
+        description:
+          "The complete analysis content to save, in markdown. Should fully answer the user's latest question; do not summarize or truncate.",
+        required: true,
+      },
+    ],
+    handler: useCallback(async (args: { answer: string }) => {
+      const answer = (args.answer ?? "").trim();
+      if (!answer) {
+        return JSON.stringify({ success: false, error: "answer is required" });
+      }
+      const currentThreadId = threadIdRef.current;
+      if (!currentThreadId) {
+        return JSON.stringify({
+          success: false,
+          error: "No active chat thread id; cannot determine report filename.",
+        });
+      }
+      // Read messages from ref so we always pick up the most recent log,
+      // not the snapshot at the time useFrontendTool first registered.
+      const events = buildEventsFromMessages(messagesRef.current, answer);
+      const res = await fetch("/api/save-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: currentThreadId,
+          systemPrompt: getColvizSystemPrompt(),
+          events,
+        }),
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        path?: string;
+        eventCount?: number;
+        error?: string;
+      };
+      if (!res.ok || !json.success) {
+        return JSON.stringify({
+          success: false,
+          error: json.error ?? "Failed to save report",
+        });
+      }
+      return JSON.stringify({
+        success: true,
+        message: `Saved analysis report (${json.eventCount} event(s)) to ${json.path}.`,
+        path: json.path,
+      });
+    }, []),
+    render: ({ status, result }: { args: { answer?: string }; status: string; result: unknown }) => (
+      <SaveReportCard status={status} result={result} />
+    ),
   });
 
   return null;

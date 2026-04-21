@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import {
   Sheet,
   SheetContent,
@@ -77,49 +76,11 @@ function RawPayloadDetails({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-// Stable custom components for ReactMarkdown (avoid re-creating on every MessageContent render)
-const MARKDOWN_COMPONENTS = {
-  a: ({ href, children }: { href?: string | null; children?: React.ReactNode }) => (
-    <a href={href ?? "#"} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  ),
-  code: ({
-    className,
-    children,
-    ...props
-  }: {
-    className?: string;
-    children?: React.ReactNode;
-  } & React.ComponentPropsWithoutRef<"code">) => {
-    const isBlock = typeof className === "string" && className.startsWith("language-");
-    if (isBlock) {
-      return <code className={className} {...props}>{children}</code>;
-    }
-    return (
-      <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
-        {children}
-      </code>
-    );
-  },
-  pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="rounded bg-muted p-3 overflow-x-auto my-2 text-xs font-mono [&>code]:bg-transparent [&>code]:p-0">
-      {children}
-    </pre>
-  ),
-};
-
-/** Render message content as full markdown (via react-markdown): links, code blocks, bold, lists, etc. */
+/** Render message content using the shared MarkdownContent component. */
 function MessageContent({ content }: { content: string }) {
-  const raw = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  if (!raw) return <span className="text-muted-foreground">—</span>;
-  return (
-    <div className="markdown-body text-sm min-w-0 whitespace-pre-wrap break-words [&_a]:text-primary [&_a]:underline [&_a:hover]:no-underline [&_a]:break-all [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:font-mono [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:overflow-x-auto [&_pre_code]:bg-transparent [&_pre_code]:p-0">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-        {raw}
-      </ReactMarkdown>
-    </div>
-  );
+  // EventDrawer shows raw chat messages, where user-typed newlines should be
+  // preserved (e.g. line breaks within a single Mattermost post).
+  return <MarkdownContent content={content} preserveWhitespace />;
 }
 
 /** Format datetime for thread list as "Day N HH:mm:ss" */

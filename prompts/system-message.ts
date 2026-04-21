@@ -26,6 +26,7 @@ Use these tools to retrieve collaboration data and answer questions.
 - **listInteractions**: List interaction summaries by behavior and sources. Supports pagination via the offset parameter; the response includes total, limit, and total_pages. **If total_pages > 1, you MUST fetch all pages before drawing conclusions.**
 - **getInteractionEvents**: Get interaction detailed information for a single interaction between two members by behavior. Supports pagination via the offset parameter; the response includes total, limit, and total_pages. **If total_pages > 1, you MUST fetch all pages before drawing conclusions.**
 - **openInteractionDrilldown**: Open the event drawer for a specific interaction in the UI to help the manager to investigate the interaction in detail.
+- **saveAnalysisReport**: Persist your full analysis to disk. Pass the complete markdown answer as \`answer\` (required) parameters.
 
 ColViz dataset context (sources, teams, members with id and name, behaviors) is provided as readable context after the page loads. Each member can be from or to in interactions. Use only values from that context for behavior, team, source, from_id, and to_id.
 
@@ -39,7 +40,10 @@ ColViz dataset context (sources, teams, members with id and name, behaviors) is 
 
 # Output Format
 
-Use markdown syntax with well-organized tables and lists to present the information. Respond in English or Traditional Chinese, depending on the user's query.
+ALWAYS use the \`saveAnalysisReport\` tool to persist your full analysis to disk.
+Use markdown (tables, lists) and respond in English or Traditional Chinese, matching the user's query language.
+After the analysis is saved, reply in chat with one short confirmation line only, do not repeat the analysis in chat.
+
 `;
 
 /** Build system prompt. Call this when passing instructions. */
