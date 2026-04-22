@@ -10,7 +10,7 @@ import type { Message as AGUIMessage, Parameter } from "@copilotkit/shared";
 import { useCopilotChatSuggestions } from "@copilotkit/react-ui";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
 import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
-import type { ProjectContext } from "../../lib/types";
+import type { ProjectContext, SelectedScope } from "../../lib/types";
 import { dateToDayLabel, datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
 import { getColvizSystemPrompt } from "../../prompts/system-message";
 import { ToolExecutionCard } from "./ToolExecutionCard";
@@ -68,76 +68,95 @@ const listInteractionsParameters: Parameter[] = [
 ];
 
 // -----------------------------------------------------------------------------
-// Argument validation
+// Argument validation — strict mode (Mode A): tool calls MUST stay within the
+// user's currently selected UI scope. Behavior is validated against the full
+// enum since the UI doesn't have a behavior filter.
 // -----------------------------------------------------------------------------
+
+const EMPTY_SCOPE_ERROR =
+  "No teams selected in the UI. Ask the user to select teams (and sources) before querying.";
+
+function selectedScopeReady(scope: SelectedScope | undefined): scope is SelectedScope {
+  if (!scope) return false;
+  return scope.teams.length > 0 && scope.sources.length > 0;
+}
+
+function unionMemberIds(scope: SelectedScope): Set<string> {
+  const ids = new Set<string>();
+  for (const list of Object.values(scope.teamMembers)) for (const id of list) ids.add(id);
+  return ids;
+}
 
 function validateBehaviorTeamSource(
   args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  if (!ctx) return null;
-  const behavior = args.behavior as string | undefined;
-  if (behavior?.trim() && !ctx.behaviors.includes(behavior.trim())) {
-    return `Invalid behavior "${behavior}". Allowed: ${ctx.behaviors.join(", ")}.`;
+  if (!scope) return null;
+  if (!selectedScopeReady(scope)) return EMPTY_SCOPE_ERROR;
+
+  const behavior = (args.behavior as string | undefined)?.trim();
+  if (behavior && !BEHAVIOR_ORDER.includes(behavior as (typeof BEHAVIOR_ORDER)[number])) {
+    return `Invalid behavior "${behavior}". Allowed: ${BEHAVIOR_ORDER.join(", ")}.`;
   }
-  const team = args.team as string | undefined;
-  const teamIds = ctx.teams.map((t) => t.id);
-  if (team?.trim() && !teamIds.includes(team.trim())) {
-    return `Invalid team "${team}". Allowed: ${teamIds.join(", ")}.`;
+  const team = (args.team as string | undefined)?.trim();
+  if (team && !scope.teams.includes(team)) {
+    return `Team "${team}" is outside the user's current selection. Allowed: ${scope.teams.join(", ")}.`;
   }
-  const source = args.source as string | undefined;
-  if (source?.trim() && !ctx.sources.includes(source.trim())) {
-    return `Invalid source "${source}". Allowed: ${ctx.sources.join(", ")}.`;
+  const source = (args.source as string | undefined)?.trim();
+  if (source && !scope.sources.includes(source)) {
+    return `Source "${source}" is outside the user's current selection. Allowed: ${scope.sources.join(", ")}.`;
+  }
+
+  if (scope.dayRange) {
+    const start = args.start != null ? Number(args.start) : null;
+    const end = args.end != null ? Number(args.end) : null;
+    if (start != null && !Number.isNaN(start) && start < scope.dayRange.start) {
+      return `start=${start} is before the selected day range (Day ${scope.dayRange.start}–Day ${scope.dayRange.end}).`;
+    }
+    if (end != null && !Number.isNaN(end) && end > scope.dayRange.end) {
+      return `end=${end} is after the selected day range (Day ${scope.dayRange.start}–Day ${scope.dayRange.end}).`;
+    }
   }
   return null;
 }
 
-function getAllowedActorIds(ctx: ProjectContext | undefined): Set<string> {
-  if (!ctx) return new Set();
-  return new Set(ctx.members.map((m) => m.id));
-}
-
-function actorIdInSet(id: string, allowedIds: Set<string>): boolean {
-  const trimmed = id.trim();
-  if (allowedIds.has(trimmed)) return true;
-  const lower = trimmed.toLowerCase();
-  return [...allowedIds].some((a) => a.toLowerCase() === lower);
-}
-
-function memberIdError(
+function memberOutOfScopeError(
   id: string,
-  allowedIds: Set<string>,
-  param: "from_id" | "to_id" = "from_id"
+  scope: SelectedScope,
+  param: "from_id" | "to_id"
 ): string {
-  const ids = Array.from(allowedIds).slice(0, 20);
-  return `Invalid ${param} "${id}". Use a member ID (e.g. ${ids.join(", ")}${allowedIds.size > 20 ? "…" : ""}).`;
+  const ids = Array.from(unionMemberIds(scope));
+  const sample = ids.slice(0, 20).join(", ");
+  return `${param} "${id}" is outside the user's current team selection. Allowed members: ${sample}${ids.length > 20 ? "…" : ""}.`;
 }
 
 function validateGetInteractionEvents(
   args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  const err = validateBehaviorTeamSource(args, ctx);
+  const err = validateBehaviorTeamSource(args, scope);
   if (err) return err;
-  if (!ctx) return null;
-  const allowedIds = getAllowedActorIds(ctx);
-  const from_id = args.from_id as string | undefined;
-  if (from_id?.trim() && !actorIdInSet(from_id, allowedIds)) return memberIdError(from_id, allowedIds, "from_id");
-  const to_id = args.to_id as string | undefined;
-  if (to_id?.trim() && !actorIdInSet(to_id, allowedIds)) return memberIdError(to_id, allowedIds, "to_id");
+  // If we got here, scope is either undefined (no error to raise) or fully ready.
+  if (!scope) return null;
+  const allowed = unionMemberIds(scope);
+  const from_id = (args.from_id as string | undefined)?.trim();
+  if (from_id && !allowed.has(from_id)) return memberOutOfScopeError(from_id, scope, "from_id");
+  const to_id = (args.to_id as string | undefined)?.trim();
+  if (to_id && !allowed.has(to_id)) return memberOutOfScopeError(to_id, scope, "to_id");
   return null;
 }
 
 function validateOpenDrilldown(
   args: { from_id?: string; to_id?: string },
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  if (!ctx) return null;
-  const allowedIds = getAllowedActorIds(ctx);
+  if (!scope) return null;
+  if (!selectedScopeReady(scope)) return EMPTY_SCOPE_ERROR;
+  const allowed = unionMemberIds(scope);
   const from_id = args.from_id?.trim();
-  if (from_id && !actorIdInSet(from_id, allowedIds)) return memberIdError(from_id, allowedIds, "from_id");
+  if (from_id && !allowed.has(from_id)) return memberOutOfScopeError(from_id, scope, "from_id");
   const to_id = args.to_id?.trim();
-  if (to_id && !actorIdInSet(to_id, allowedIds)) return memberIdError(to_id, allowedIds, "to_id");
+  if (to_id && !allowed.has(to_id)) return memberOutOfScopeError(to_id, scope, "to_id");
   return null;
 }
 
@@ -225,13 +244,17 @@ function anonymizeEvent(
 
 export interface FrontendToolsProps {
   onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
+  /** Full dataset — used only for name→id mapping when post-processing tool results. Never sent to the LLM. */
   projectContext?: ProjectContext;
+  /** User's current UI selection — exposed to the LLM via useCopilotReadable. */
+  selectedScope?: SelectedScope;
   dataMinDate?: string;
 }
 
 export function FrontendTools({
   onOpenDrilldown,
   projectContext,
+  selectedScope,
   dataMinDate,
 }: FrontendToolsProps = {}) {
   // NOTE: deliberately use the *internal* hook here. In this version of
@@ -258,15 +281,16 @@ export function FrontendTools({
     threadIdRef.current = chat.threadId;
   }, [chat.threadId]);
 
-  // Default suggestions: cumulative N-day summaries using stage end days as milestones
+  // Suggestions: one per selected team. Keep the chat message minimal — all
+  // analysis context (day range, sources, member IDs per team) is already in
+  // the readable below and the system prompt.
   const suggestions = useMemo(() => {
-    const stages = projectContext?.stages ?? [];
-    if (stages.length === 0) return [];
-    return stages.map((s) => ({
-      title: `${s.name} collaboration summary`,
-      message: `Provide a collaboration summary from Day ${s.startDay} to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention. Save the analysis to disk directly and do not repeat the analysis.`,
+    if (!selectedScope || selectedScope.teams.length === 0) return [];
+    return selectedScope.teams.map((teamId) => ({
+      title: `${teamId} Collaboration Summary`,
+      message: `Summarize ${teamId} collaboration and save the analysis report`,
     }));
-  }, [projectContext?.stages]);
+  }, [selectedScope]);
   useCopilotChatSuggestions(
     {
       suggestions,
@@ -275,23 +299,29 @@ export function FrontendTools({
     [suggestions]
   );
 
+  // Readable sent to the LLM: anonymized (IDs only) and scoped to the user's
+  // current UI filter. dataRange.totalDays is from the full dataset so the
+  // model still understands the absolute timeline.
   const readableValue = useMemo(
     () =>
-      projectContext
+      selectedScope
         ? {
-            sources: projectContext.sources,
-            teams: projectContext.teams,
-            members: projectContext.members,
-            behaviors: projectContext.behaviors,
-            dataRange: projectContext.dataRange,
+            selected: {
+              sources: selectedScope.sources,
+              teams: selectedScope.teams,
+              teamMembers: selectedScope.teamMembers,
+              dayRange: selectedScope.dayRange,
+            },
+            behaviors: [...BEHAVIOR_ORDER],
+            dataRange: projectContext?.dataRange,
           }
         : null,
-    [projectContext]
+    [selectedScope, projectContext?.dataRange]
   );
   useCopilotReadable(
     {
       description:
-        "ColViz dataset context: allowed sources, teams, members (ID + name), and behaviors.",
+        "ColViz scope the user is currently viewing. `selected` reflects the active UI filters (sources, teams, members per team, day range in Day-N units) — tool calls MUST stay within this scope. `behaviors` is the full enum. `dataRange.totalDays` describes the full dataset timeline.",
       value: readableValue,
       available: readableValue ? "enabled" : "disabled",
     },
@@ -305,7 +335,7 @@ export function FrontendTools({
     parameters: getInteractionEventsParameters,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
-        const err = validateGetInteractionEvents(args, projectContext);
+        const err = validateGetInteractionEvents(args, selectedScope);
         if (err) return JSON.stringify({ error: err, events: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
         const res = await fetch(buildDrilldownUrl(apiArgs));
@@ -315,7 +345,7 @@ export function FrontendTools({
         const events = (json.events ?? []).map((e) => anonymizeEvent(e, dataMinDate, nameMap));
         return JSON.stringify({ events, total: json.total ?? 0 });
       },
-      [projectContext, dataMinDate]
+      [projectContext, selectedScope, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
@@ -337,7 +367,7 @@ export function FrontendTools({
     parameters: listInteractionsParameters,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
-        const err = validateBehaviorTeamSource(args, projectContext);
+        const err = validateBehaviorTeamSource(args, selectedScope);
         if (err) return JSON.stringify({ error: err, summaries: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
         const res = await fetch(buildInteractionSummaryUrl(apiArgs));
@@ -352,7 +382,7 @@ export function FrontendTools({
         });
         return JSON.stringify({ summaries, total: json.total ?? 0 });
       },
-      [projectContext, dataMinDate]
+      [selectedScope, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
@@ -377,7 +407,7 @@ export function FrontendTools({
     ],
     handler: useCallback(
       async (args: { from_id: string; to_id: string }) => {
-        const err = validateOpenDrilldown(args, projectContext);
+        const err = validateOpenDrilldown(args, selectedScope);
         if (err) return JSON.stringify({ success: false, error: err });
         onOpenDrilldown?.(args);
         return JSON.stringify({
@@ -385,7 +415,7 @@ export function FrontendTools({
           message: `Opened event drawer for ${args.from_id} → ${args.to_id}.`,
         });
       },
-      [onOpenDrilldown, projectContext]
+      [onOpenDrilldown, selectedScope]
     ),
     render: ({ status, result }: { args: { from_id?: string; to_id?: string }; status: string; result: unknown }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);

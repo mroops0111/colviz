@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { BEHAVIOR_ORDER, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
 import { CollaborationData, DrilldownFilters, ProjectContext, StageInfo } from "@/lib/types";
 import { totalDaysInRange } from "@/lib/dayLabel";
+import { buildSelectedScope } from "@/lib/selectedScope";
 
 export default function Home() {
   const [data, setData] = useState<CollaborationData[]>([]);
@@ -79,6 +80,11 @@ export default function Home() {
   }, [data, dataRange, stages]);
 
   const dataMinDate = dataRange?.[0]?.toISOString();
+
+  const selectedScope = useMemo(
+    () => buildSelectedScope({ data, selectedSources, selectedTeams, selectedRange, dataMinDate }),
+    [data, selectedSources, selectedTeams, selectedRange, dataMinDate]
+  );
 
   const handleDataLoaded = useCallback((loadedData: CollaborationData[]) => {
     setData(loadedData);
@@ -299,7 +305,12 @@ export default function Home() {
           dataMinDate={dataMinDate}
         />
 
-        <FrontendTools projectContext={projectContext} onOpenDrilldown={handleOpenDrilldown} dataMinDate={dataMinDate} />
+        <FrontendTools
+          projectContext={projectContext}
+          selectedScope={selectedScope}
+          onOpenDrilldown={handleOpenDrilldown}
+          dataMinDate={dataMinDate}
+        />
       </div>
     </div>
   );

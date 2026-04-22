@@ -69,7 +69,10 @@ export default function MultiSelectFilter({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div
+        className="grid grid-flow-col grid-cols-2 gap-x-4 gap-y-2"
+        style={{ gridTemplateRows: `repeat(${Math.ceil(options.length / 2)}, auto)` }}
+      >
         {options.map(({ value, label }) => (
           <div key={value} className="flex items-center space-x-2">
             <Checkbox

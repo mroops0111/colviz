@@ -34,7 +34,7 @@ export interface StageInfo {
   endDay: number;
 }
 
-/** Context exposed to Copilot via useCopilotReadable for tool parameter validation and hints */
+/** Full dataset context — used internally for name→id mapping when post-processing tool results. NOT sent to the LLM. */
 export interface ProjectContext {
   sources: string[];
   teams: { id: string; name: string }[];
@@ -42,6 +42,25 @@ export interface ProjectContext {
   behaviors: string[];
   dataRange?: { totalDays: number };
   stages?: StageInfo[];
+}
+
+/**
+ * The user's current filter selection in the UI.
+ *
+ * This is what gets sent to the LLM via useCopilotReadable. All values are
+ * anonymized (IDs only, no real names) and reflect exactly what the user is
+ * looking at — not the full dataset. Tool validators also enforce that any
+ * tool call stays within this scope.
+ */
+export interface SelectedScope {
+  /** Selected data sources (e.g. ["gitlab", "mattermost"]). */
+  sources: string[];
+  /** Selected team IDs, including virtual stage teams (S1/S2/S3). */
+  teams: string[];
+  /** teamId → list of member IDs that participate in this team (intra-team rows). */
+  teamMembers: Record<string, string[]>;
+  /** Selected day range in Day-N units (Day 1 = dataset min date). */
+  dayRange?: { start: number; end: number };
 }
 
 /** Drilldown / EventDrawer filter params (query and API) */

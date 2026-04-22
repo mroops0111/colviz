@@ -19,7 +19,7 @@ export default function TeamFilter({
     const teamMap = new Map<string, string>();
     data.forEach((d) => teamMap.set(d.team_id, d.team));
     return Array.from(teamMap.entries())
-      .map(([id, name]) => ({ value: id, label: name }))
+      .map(([id, name]) => ({ value: id, label: `${id} · ${name}` }))
       .sort((a, b) => a.value.localeCompare(b.value));
   }, [data]);
 

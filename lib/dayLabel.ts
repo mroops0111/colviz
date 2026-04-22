@@ -8,12 +8,16 @@ function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-/** Convert a date string to "Day N" label. Day 1 = minDate. */
-export function dateToDayLabel(dateStr: string, minDateStr: string): string {
+/** Convert a date string to a Day-N number. Day 1 = minDate. */
+export function dateToDayNumber(dateStr: string, minDateStr: string): number {
   const d = startOfDay(new Date(dateStr));
   const min = startOfDay(new Date(minDateStr));
-  const diffDays = Math.round((d.getTime() - min.getTime()) / MS_PER_DAY);
-  return `Day ${diffDays + 1}`;
+  return Math.round((d.getTime() - min.getTime()) / MS_PER_DAY) + 1;
+}
+
+/** Convert a date string to "Day N" label. Day 1 = minDate. */
+export function dateToDayLabel(dateStr: string, minDateStr: string): string {
+  return `Day ${dateToDayNumber(dateStr, minDateStr)}`;
 }
 
 /** Convert an ISO datetime to "Day N HH:mm:ss" format. */
