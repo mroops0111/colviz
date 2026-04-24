@@ -1,11 +1,12 @@
 /**
  * Shared query logic for CopilotKit backend actions and drilldown API.
- * Used by getInteractionEvents, listInteractions, and app/api/drilldown/route.ts.
+ * Used by getInteractionEvents, getInteractionSummary, and app/api/drilldown/route.ts.
  */
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { parsePayloadJson } from "@/lib/payload";
+import { BEHAVIOR_ORDER } from "@/lib/dataProcessor";
 import type { DrilldownEventRecord } from "@/lib/types";
 
 /** Common filter inputs for edge/event queries */
@@ -126,7 +127,8 @@ export async function queryEdgeEvents(
   datasetName: string,
   filters: EdgeQueryFilters,
   limit: number = 50,
-  offset: number = 0
+  offset: number = 0,
+  order: "asc" | "desc" = "desc"
 ): Promise<{ events: DrilldownEventRecord[]; total: number }> {
   const dataset = await prisma.dataset.findUnique({
     where: { name: datasetName },
@@ -152,7 +154,7 @@ export async function queryEdgeEvents(
   const [interactions, total] = await Promise.all([
     prisma.interaction.findMany({
       where,
-      orderBy: { occurredAt: "desc" },
+      orderBy: { occurredAt: order },
       skip: offset,
       take: limit,
       include: {
@@ -170,6 +172,75 @@ export async function queryEdgeEvents(
   return { events, total };
 }
 
+/**
+ * Aggregate stats for the *entire* filtered set (across all pages).
+ *
+ * Owns *all* aggregate views the AI gets: how many events total, how they
+ * split across behaviors, and how the volume distributes over Day-N buckets.
+ * Per-pair counts are intentionally NOT here — they're carried by
+ * queryListInteractionSummaries() (one row per from×to×behavior). This way
+ * getInteractionSummary owns "shape of the data" and getInteractionEvents
+ * owns "the events themselves" with no overlap.
+ */
+export interface InteractionAggregateSummary {
+  event_count: number;
+  by_behavior: Record<string, number>;
+  by_day: Record<string, number>;
+}
+
+export async function summarizeInteractions(
+  datasetName: string,
+  filters: EdgeQueryFilters,
+  /** ISO date of Day 1; required to bucket by_day under "Day N" labels. */
+  minDateIso: string | null
+): Promise<InteractionAggregateSummary> {
+  const dataset = await prisma.dataset.findUnique({
+    where: { name: datasetName },
+    select: { id: true },
+  });
+  if (!dataset) {
+    return { event_count: 0, by_behavior: {}, by_day: {} };
+  }
+
+  const [resolvedFrom, resolvedTo] = await Promise.all([
+    filters.from_id ? resolveActorKey(dataset.id, filters.from_id) : null,
+    filters.to_id ? resolveActorKey(dataset.id, filters.to_id) : null,
+  ]);
+  const where = buildDrilldownWhere(dataset.id, {
+    ...filters,
+    from_id: filters.from_id ? (resolvedFrom ?? filters.from_id) : undefined,
+    to_id: filters.to_id ? (resolvedTo ?? filters.to_id) : undefined,
+  });
+
+  const rows = await prisma.interaction.findMany({
+    where,
+    select: { behavior: true, occurredAt: true },
+  });
+
+  const by_behavior: Record<string, number> = {};
+  const by_day: Record<string, number> = {};
+
+  // Day-N bucketing mirrors lib/dayLabel.dateToDayNumber (whole-day diff from min date).
+  const MS_PER_DAY = 1000 * 60 * 60 * 24;
+  const minDayMs = minDateIso
+    ? new Date(new Date(minDateIso).getFullYear(), new Date(minDateIso).getMonth(), new Date(minDateIso).getDate()).getTime()
+    : null;
+
+  for (const r of rows) {
+    by_behavior[r.behavior] = (by_behavior[r.behavior] ?? 0) + 1;
+
+    if (minDayMs != null) {
+      const d = r.occurredAt;
+      const localMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const dayNum = Math.round((localMidnight - minDayMs) / MS_PER_DAY) + 1;
+      const key = `Day ${dayNum}`;
+      by_day[key] = (by_day[key] ?? 0) + 1;
+    }
+  }
+
+  return { event_count: rows.length, by_behavior, by_day };
+}
+
 export interface InteractionSummary {
   behavior: string;
   from_id: string;
@@ -182,11 +253,12 @@ export interface InteractionSummary {
 /**
  * List interactions aggregated by (from, to, behavior) with total weight as count.
  */
+const SUMMARY_HARD_CAP = 500;
+
 export async function queryListInteractionSummaries(
   datasetName: string,
-  filters: Omit<EdgeQueryFilters, "from_id" | "to_id">,
-  limit: number = 50
-): Promise<{ summaries: InteractionSummary[]; total: number }> {
+  filters: Omit<EdgeQueryFilters, "from_id" | "to_id">
+): Promise<{ summaries: InteractionSummary[]; pair_count: number; capped: boolean }> {
   const dataset = await prisma.dataset.findUnique({
     where: { name: datasetName },
     select: { id: true },
@@ -237,8 +309,14 @@ export async function queryListInteractionSummaries(
     }
   }
 
-  const summaries = Array.from(map.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, limit);
-  return { summaries, total: map.size };
+  const behaviorRank = new Map(BEHAVIOR_ORDER.map((b, i) => [b, i]));
+  const all = Array.from(map.values()).sort((a, b) => {
+    const bRank = (behaviorRank.get(a.behavior) ?? 99) - (behaviorRank.get(b.behavior) ?? 99);
+    if (bRank !== 0) return bRank;
+    return b.count - a.count;
+  });
+  const capped = all.length > SUMMARY_HARD_CAP;
+  const summaries = capped ? all.slice(0, SUMMARY_HARD_CAP) : all;
+  return { summaries, pair_count: all.length, capped };
 }
+

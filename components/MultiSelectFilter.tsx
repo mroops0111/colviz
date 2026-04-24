@@ -42,25 +42,27 @@ export default function MultiSelectFilter({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 space-y-1">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <p className="text-xs text-muted-foreground">
-            {selected.size} / {options.length} selected
-          </p>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-2">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">{title}</p>
+          <span className="text-[10px] text-muted-foreground/60">
+            {selected.size}/{options.length}
+          </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
+            className="h-6 px-2 text-xs"
             onClick={handleSelectAll}
             disabled={isAllSelected}
           >
             All
           </Button>
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
+            className="h-6 px-2 text-xs"
             onClick={handleDeselectAll}
             disabled={isNoneSelected}
           >
@@ -70,19 +72,20 @@ export default function MultiSelectFilter({
       </div>
 
       <div
-        className="grid grid-flow-col grid-cols-2 gap-x-4 gap-y-2"
+        className="grid grid-flow-col grid-cols-2 gap-x-3 gap-y-1.5"
         style={{ gridTemplateRows: `repeat(${Math.ceil(options.length / 2)}, auto)` }}
       >
         {options.map(({ value, label }) => (
-          <div key={value} className="flex items-center space-x-2">
+          <div key={value} className="flex items-center gap-1.5 min-w-0">
             <Checkbox
               id={`${title}-${value}`}
               checked={selected.has(value)}
               onCheckedChange={() => handleToggle(value)}
+              className="shrink-0"
             />
             <Label
               htmlFor={`${title}-${value}`}
-              className="text-xs font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer"
+              className="text-xs leading-none cursor-pointer truncate peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
             >
               {label}
             </Label>

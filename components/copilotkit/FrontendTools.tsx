@@ -11,7 +11,7 @@ import { useCopilotChatSuggestions } from "@copilotkit/react-ui";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
 import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
 import type { ProjectContext, SelectedScope } from "../../lib/types";
-import { dateToDayLabel, datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
+import { datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
 import { getColvizSystemPrompt } from "../../prompts/system-message";
 import { ToolExecutionCard } from "./ToolExecutionCard";
 import { resolveCardStatusAndHint } from "./toolCardStatus";
@@ -32,7 +32,17 @@ function appendParams(params: URLSearchParams, args: Record<string, unknown>, ke
 function buildDrilldownUrl(args: Record<string, unknown>): string {
   const p = new URLSearchParams();
   p.set("dataset", (args.dataset as string) || "default");
-  appendParams(p, args, ["behavior", "from_id", "to_id", "start", "end", "source", "team"]);
+  appendParams(p, args, [
+    "behavior",
+    "from_id",
+    "to_id",
+    "start",
+    "end",
+    "source",
+    "team",
+    "offset",
+    "order",
+  ]);
   return `/api/drilldown?${p.toString()}`;
 }
 
@@ -48,23 +58,42 @@ function buildInteractionSummaryUrl(args: Record<string, unknown>): string {
 // -----------------------------------------------------------------------------
 
 const getInteractionEventsParameters: Parameter[] = [
-  { name: "behavior", type: "string", description: "One of: " + BEHAVIOR_ORDER.join(", "), required: true },
-  { name: "from_id", type: "string", description: "Member ID (e.g., M1)", required: true },
-  { name: "to_id", type: "string", description: "Member ID (e.g., M2)", required: true },
+  {
+    name: "behavior",
+    type: "string",
+    description:
+      "Optional behavior filter. One of: " +
+      BEHAVIOR_ORDER.join(", ") +
+      ". Omit to include all behaviors in the same time-series response.",
+    required: false,
+  },
+  {
+    name: "from_id",
+    type: "string",
+    description:
+      "Optional sender member ID (e.g. M1). Omit to include events from every actor in the team scope (recommended for team-level time-series analysis).",
+    required: false,
+  },
+  {
+    name: "to_id",
+    type: "string",
+    description:
+      "Optional receiver member ID (e.g. M2). Omit to include events to every actor in the team scope.",
+    required: false,
+  },
+  { name: "team", type: "string", description: "Team ID (e.g. T2). Recommended scope for time-series queries.", required: false },
+  { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
-  { name: "source", type: "string", description: "Source name (omit for all)", required: false },
-  { name: "team", type: "string", description: "Team name (omit for all)", required: false },
   { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
 
-const listInteractionsParameters: Parameter[] = [
+const getInteractionSummaryParameters: Parameter[] = [
   { name: "behavior", type: "string", description: `Optional filter. One of: ${BEHAVIOR_ORDER.join(", ")}`, required: false },
   { name: "team", type: "string", description: "Team name (omit for all)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
-  { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
 
 // -----------------------------------------------------------------------------
@@ -197,45 +226,68 @@ function replaceWithId(value: unknown, nameMap: Map<string, string>): unknown {
   return value;
 }
 
-const PAYLOAD_NAME_KEYS = new Set(["members", "team", "teams"]);
+// Payload keys whose string/array values are real names → anonymize to IDs.
+const PAYLOAD_NAME_KEYS = new Set(["members"]);
+// Payload keys to drop entirely (redundant with top-level event fields or internal metadata).
+const PAYLOAD_DROP_KEYS = new Set(["rowIndex", "datetime", "team", "teams"]);
+// Meeting-specific keys that duplicate title/content or contain raw names.
+const MEETING_DROP_SUFFIXES = ["-intra", "-inter", "-subject", "-description"];
+const MEETING_DROP_KEYS = new Set(["meetingGoal"]);
 
-/** Replace name fields in rawItem.payload with actor IDs (mirrors _anonymize_event in api_client.py). */
-function anonymizePayload(
-  event: Record<string, unknown>,
-  nameMap: Map<string, string>
-): Record<string, unknown> {
-  const rawItem = event.rawItem;
-  if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return event;
-  const ri = rawItem as Record<string, unknown>;
-  const payload = ri.payload;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return event;
-  const cleanPayload = Object.fromEntries(
-    Object.entries(payload as Record<string, unknown>).map(([k, v]) =>
-      PAYLOAD_NAME_KEYS.has(k) ? [k, replaceWithId(v, nameMap)] : [k, v]
-    )
-  );
-  return { ...event, rawItem: { ...ri, payload: cleanPayload } };
+function shouldDropMeetingKey(k: string): boolean {
+  return MEETING_DROP_KEYS.has(k) || MEETING_DROP_SUFFIXES.some((s) => k.endsWith(s));
 }
 
-/** Anonymize a single drilldown event: strip names, replace payload IDs, convert dates to Day N. */
-function anonymizeEvent(
+/**
+ * Slim a drilldown event down to the fields the LLM actually reasons about.
+ *
+ * Drops: real names (`from`, `to`, `team`), opaque IDs (`id`, `rawItem.id`,
+ * `rawItem.sourceItemId`, `rawItem.sourceItemType`, `rawItem.contentFormat`),
+ * and the redundant `date` field (datetime already encodes the day with HH:MM:SS).
+ *
+ * Payload cleanup: drops empty-string values and internal metadata keys
+ * (`rowIndex`, `datetime`). Flattens `rawItem.{title, content, payload}` onto
+ * the event itself. Payload names are anonymized to IDs.
+ */
+function slimEvent(
   e: unknown,
   dataMinDate: string | undefined,
   nameMap: Map<string, string>
 ): Record<string, unknown> {
-  const { from, to, ...ev } = e as Record<string, unknown>;
-  void from;
-  void to;
-  const dated = {
-    ...ev,
-    ...(dataMinDate && typeof ev.date === "string"
-      ? { date: dateToDayLabel(ev.date, dataMinDate) }
-      : {}),
-    ...(dataMinDate && typeof ev.datetime === "string"
-      ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) }
-      : {}),
+  const ev = e as Record<string, unknown>;
+  const datetimeStr =
+    dataMinDate && typeof ev.datetime === "string"
+      ? datetimeToDayLabel(ev.datetime, dataMinDate)
+      : ev.datetime;
+
+  const slim: Record<string, unknown> = {
+    datetime: datetimeStr,
+    behavior: ev.behavior,
+    source: ev.source,
+    scope: ev.scope,
+    team_id: ev.team_id,
+    from_id: ev.from_id,
+    to_id: ev.to_id,
+    weight: ev.weight,
   };
-  return anonymizePayload(dated, nameMap);
+
+  const rawItem = ev.rawItem;
+  if (rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)) {
+    const ri = rawItem as Record<string, unknown>;
+    if (ri.title != null) slim.title = ri.title;
+    if (ri.content != null) slim.content = ri.content;
+    if (ri.payload && typeof ri.payload === "object" && !Array.isArray(ri.payload)) {
+      const isMeeting = ev.source === "meeting";
+      const cleanPayload = Object.fromEntries(
+        Object.entries(ri.payload as Record<string, unknown>)
+          .filter(([k, v]) => !PAYLOAD_DROP_KEYS.has(k) && v !== "" && !(isMeeting && shouldDropMeetingKey(k)))
+          .map(([k, v]) => PAYLOAD_NAME_KEYS.has(k) ? [k, replaceWithId(v, nameMap)] : [k, v])
+      );
+      if (Object.keys(cleanPayload).length > 0) slim.payload = cleanPayload;
+    }
+  }
+
+  return slim;
 }
 
 // -----------------------------------------------------------------------------
@@ -288,13 +340,13 @@ export function FrontendTools({
     if (!selectedScope || selectedScope.teams.length === 0) return [];
     return selectedScope.teams.map((teamId) => ({
       title: `${teamId} Collaboration Summary`,
-      message: `Summarize ${teamId} collaboration and save the analysis report`,
+      message: `Analyze ${teamId} collaboration with detailed events and save the report`,
     }));
   }, [selectedScope]);
   useCopilotChatSuggestions(
     {
       suggestions,
-      available: suggestions.length > 0 ? "before-first-message" : "disabled",
+      available: "before-first-message",
     },
     [suggestions]
   );
@@ -331,19 +383,35 @@ export function FrontendTools({
   useFrontendTool({
     name: "getInteractionEvents",
     description:
-      "Get detailed collaboration events and raw data for interactions between two members (from_id → to_id), filtered by behavior, team, source, start, end.",
+      "Stream the raw collaboration events (chronological, ascending) for a scope. Each row contains who→whom, datetime (Day-N HH:MM:SS), behavior, and the underlying message/title/payload. Prefer team-scoped queries (team + start + end) so the timeline stays unified instead of being fanned out across directed pairs; provide from_id/to_id only when zooming into one edge. Returns events only — no aggregate counts. For totals or distributions across pairs/behaviors/days, call getInteractionSummary first.",
     parameters: getInteractionEventsParameters,
+    followUp: true,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
         const err = validateGetInteractionEvents(args, selectedScope);
         if (err) return JSON.stringify({ error: err, events: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
+        // ASC for human/AI-friendly chronological reading.
+        apiArgs.order = "asc";
         const res = await fetch(buildDrilldownUrl(apiArgs));
-        const json = (await res.json()) as { events?: unknown[]; total?: number; error?: string };
+        const json = (await res.json()) as {
+          events?: unknown[];
+          total?: number;
+          limit?: number;
+          offset?: number;
+          total_pages?: number;
+          error?: string;
+        };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", events: [], total: 0 });
         const nameMap = buildNameMap(projectContext);
-        const events = (json.events ?? []).map((e) => anonymizeEvent(e, dataMinDate, nameMap));
-        return JSON.stringify({ events, total: json.total ?? 0 });
+        const events = (json.events ?? []).map((e) => slimEvent(e, dataMinDate, nameMap));
+        return JSON.stringify({
+          events,
+          total: json.total ?? 0,
+          limit: json.limit,
+          offset: json.offset,
+          total_pages: json.total_pages,
+        });
       },
       [projectContext, selectedScope, dataMinDate]
     ),
@@ -351,7 +419,7 @@ export function FrontendTools({
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Query interaction events"
+          title="Get interaction events"
           icon={List}
           status={cardStatus}
           hint={hint}
@@ -361,26 +429,45 @@ export function FrontendTools({
   });
 
   useFrontendTool({
-    name: "listInteractions",
+    name: "getInteractionSummary",
     description:
-      "List brief collaboration interaction summaries with counts, filtered by behavior, team, source, start, end.",
-    parameters: listInteractionsParameters,
+      "Get aggregate counts for a scope — the 'shape' of the data, not the events themselves. The response carries a `summary` block ({ total_events, by_behavior, by_day }) for the entire filtered set, plus an `interactions` array with one row per (from_id, to_id, behavior) and that pair's count. No event content is included. Use this first to understand volume / who-interacts-with-whom / day distribution; then call getInteractionEvents to read what was actually said.",
+    parameters: getInteractionSummaryParameters,
+    followUp: true,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
         const err = validateBehaviorTeamSource(args, selectedScope);
-        if (err) return JSON.stringify({ error: err, summaries: [], total: 0 });
+        if (err) return JSON.stringify({ error: err, summary: null, interactions: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
         const res = await fetch(buildInteractionSummaryUrl(apiArgs));
-        const json = (await res.json()) as { summaries?: unknown[]; total?: number; error?: string };
-        if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", summaries: [], total: 0 });
-        // Strip real names (from_name/to_name) from summaries
-        const summaries = (json.summaries ?? []).map((s) => {
+        const json = (await res.json()) as {
+          summary?: unknown;
+          summaries?: unknown[];
+          pair_count?: number;
+          capped?: boolean;
+          error?: string;
+        };
+        if (!res.ok) {
+          return JSON.stringify({
+            error: json.error ?? "Request failed",
+            summary: null,
+            interactions: [],
+            total: 0,
+          });
+        }
+        // Strip real names (from_name/to_name) from each per-pair row.
+        const interactions = (json.summaries ?? []).map((s) => {
           const { from_name, to_name, ...rest } = s as Record<string, unknown>;
           void from_name;
           void to_name;
           return rest;
         });
-        return JSON.stringify({ summaries, total: json.total ?? 0 });
+        return JSON.stringify({
+          summary: json.summary ?? null,
+          interactions,
+          pair_count: json.pair_count ?? 0,
+          ...(json.capped ? { capped: true } : {}),
+        });
       },
       [selectedScope, dataMinDate]
     ),
@@ -388,7 +475,7 @@ export function FrontendTools({
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Query interactions by behavior"
+          title="Get interaction summary"
           icon={GitBranch}
           status={cardStatus}
           hint={hint}
@@ -405,6 +492,7 @@ export function FrontendTools({
       { name: "from_id", type: "string", description: "Member ID", required: true },
       { name: "to_id", type: "string", description: "Member ID", required: true },
     ],
+    followUp: true,
     handler: useCallback(
       async (args: { from_id: string; to_id: string }) => {
         const err = validateOpenDrilldown(args, selectedScope);
@@ -446,6 +534,7 @@ export function FrontendTools({
         required: true,
       },
     ],
+    followUp: false,
     handler: useCallback(async (args: { answer: string }) => {
       const answer = (args.answer ?? "").trim();
       if (!answer) {

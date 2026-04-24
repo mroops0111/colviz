@@ -4,7 +4,14 @@ import { queryEdgeEvents } from "@/lib/copilotQueries";
 
 export const runtime = "nodejs";
 
-/** GET /api/drilldown - Accepts singular (team, source) or plural (teams, sources) query params. */
+/** GET /api/drilldown - Accepts singular (team, source) or plural (teams, sources) query params.
+ *
+ * Optional query param (used by the AI tool layer; UI callers can ignore):
+ * - order=asc|desc (default desc)  — chronological direction of events
+ *
+ * Aggregate stats (counts / breakdowns) live on /api/interaction-summary; this
+ * endpoint is purely for the raw event stream.
+ */
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const datasetName = url.searchParams.get("dataset")?.trim() || "default";
@@ -31,6 +38,8 @@ export async function GET(request: Request) {
     0,
     Number.parseInt(url.searchParams.get("offset") || "0", 10)
   );
+  const order: "asc" | "desc" =
+    url.searchParams.get("order")?.trim().toLowerCase() === "asc" ? "asc" : "desc";
 
   const { events, total } = await queryEdgeEvents(
     datasetName,
@@ -45,7 +54,8 @@ export async function GET(request: Request) {
       end: end?.toISOString(),
     },
     limit,
-    offset
+    offset,
+    order
   );
 
   return NextResponse.json({

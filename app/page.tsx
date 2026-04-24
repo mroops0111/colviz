@@ -7,8 +7,10 @@ import TimeRangeFilter from "@/components/TimeRangeFilter";
 import TeamFilter from "@/components/TeamFilter";
 import SourceFilter from "@/components/SourceFilter";
 import EventDrawer from "@/components/EventDrawer";
-import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { CopilotChat } from "@copilotkit/react-ui";
+import { getColvizSystemPrompt } from "@/prompts/system-message";
+import { COLVIZ_SIDEBAR_WELCOME } from "@/prompts/welcome-message";
 import { BEHAVIOR_ORDER, BEHAVIOR_COLORS } from "@/lib/dataProcessor";
 import { CollaborationData, DrilldownFilters, ProjectContext, StageInfo } from "@/lib/types";
 import { totalDaysInRange } from "@/lib/dayLabel";
@@ -200,118 +202,125 @@ export default function Home() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-muted/50">
-      <div className="container mx-auto px-4 py-8">
-        <header className="mb-8">
-          <h1 className="text-4xl font-bold mb-2">
-            ColViz
-          </h1>
-          <p className="text-muted-foreground">
-            Collaboration Behavior Visualization Tool
-          </p>
-        </header>
+    <div className="h-screen flex flex-col overflow-hidden bg-background">
+      {/* Compact header */}
+      <header className="shrink-0 h-11 border-b flex items-center px-5 gap-4">
+        <h1 className="text-sm font-semibold tracking-tight">ColViz</h1>
+        <span className="hidden sm:block text-[10px] text-muted-foreground/60 uppercase tracking-widest font-medium">
+          Collaboration Behavior Visualization
+        </span>
+      </header>
 
-        {error && (
-          <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
-            <p className="text-destructive text-sm">{error}</p>
+      {error && (
+        <div className="shrink-0 px-5 py-2 bg-destructive/10 border-b border-destructive/20">
+          <p className="text-destructive text-xs">{error}</p>
+        </div>
+      )}
+
+      {data.length > 0 && dataRange && selectedRange ? (
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* Filter sidebar — 25% */}
+          <aside className="w-[25%] shrink-0 border-r flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-y-auto py-5 px-4 space-y-5">
+              <TimeRangeFilter
+                minDate={dataRange[0]}
+                maxDate={dataRange[1]}
+                startDate={selectedRange[0]}
+                endDate={selectedRange[1]}
+                onRangeChange={handleDateRangeChange}
+                chartData={trendChartData}
+                behaviors={BEHAVIOR_ORDER}
+                behaviorColors={BEHAVIOR_COLORS}
+              />
+
+              <div className="h-px bg-border/60" />
+
+              <TeamFilter
+                data={data}
+                selected={selectedTeams}
+                onFilterChange={handleTeamFilterChange}
+              />
+
+              <div className="h-px bg-border/60" />
+
+              <SourceFilter
+                data={data}
+                selected={selectedSources}
+                onFilterChange={handleSourceFilterChange}
+              />
+
+              <div className="h-px bg-border/60" />
+
+              <div>
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest mb-2.5">
+                  Display
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={showNames ? "default" : "outline"}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setShowNames(true)}
+                  >
+                    Name
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={!showNames ? "default" : "outline"}
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setShowNames(false)}
+                  >
+                    ID Only
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          {/* Main diagram area */}
+          <main className="flex-1 min-w-0 overflow-hidden p-3 flex flex-col">
+            <ArcDiagram
+              data={filteredData}
+              showNames={showNames}
+              onLinkClick={handleLinkClick}
+              onBehaviorDrilldown={handleBehaviorDrilldown}
+              eventDrawerOpen={drawerOpen}
+            />
+          </main>
+
+          {/* Chatbot — 25% fixed right panel */}
+          <div className="w-[25%] shrink-0 border-l flex flex-col overflow-hidden">
+
+            <CopilotChat
+              instructions={getColvizSystemPrompt()}
+              labels={{ initial: COLVIZ_SIDEBAR_WELCOME }}
+              className="h-full"
+            />
           </div>
-        )}
+        </div>
+      ) : !error ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-muted-foreground text-sm">Loading data…</p>
+        </div>
+      ) : null}
 
-        {data.length > 0 && dataRange && selectedRange && (
-          <div className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
-            <aside className="space-y-4">
-              <Card>
-                <CardContent className="pt-5">
-                  <TimeRangeFilter
-                    minDate={dataRange[0]}
-                    maxDate={dataRange[1]}
-                    startDate={selectedRange[0]}
-                    endDate={selectedRange[1]}
-                    onRangeChange={handleDateRangeChange}
-                    chartData={trendChartData}
-                    behaviors={BEHAVIOR_ORDER}
-                    behaviorColors={BEHAVIOR_COLORS}
-                  />
-                </CardContent>
-              </Card>
+      <EventDrawer
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        filters={drilldownFilters}
+        showNames={showNames}
+        datasetName="default"
+        dataMinDate={dataMinDate}
+      />
 
-              <Card>
-                <CardContent className="pt-5">
-                  <TeamFilter
-                    data={data}
-                    selected={selectedTeams}
-                    onFilterChange={handleTeamFilterChange}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="pt-5">
-                  <SourceFilter
-                    data={data}
-                    selected={selectedSources}
-                    onFilterChange={handleSourceFilterChange}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="pt-5">
-                  <p className="text-sm font-medium mb-2">Display Label</p>
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant={showNames ? "default" : "outline"}
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => setShowNames(true)}
-                    >
-                      Name
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={!showNames ? "default" : "outline"}
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => setShowNames(false)}
-                    >
-                      ID Only
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </aside>
-
-            <Card className="h-full min-w-0">
-              <CardContent className="pt-6">
-                <ArcDiagram
-                  data={filteredData}
-                  showNames={showNames}
-                  onLinkClick={handleLinkClick}
-                  onBehaviorDrilldown={handleBehaviorDrilldown}
-                  eventDrawerOpen={drawerOpen}
-                />
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        <EventDrawer
-          open={drawerOpen}
-          onOpenChange={setDrawerOpen}
-          filters={drilldownFilters}
-          showNames={showNames}
-          datasetName="default"
-          dataMinDate={dataMinDate}
-        />
-
-        <FrontendTools
-          projectContext={projectContext}
-          selectedScope={selectedScope}
-          onOpenDrilldown={handleOpenDrilldown}
-          dataMinDate={dataMinDate}
-        />
-      </div>
+      <FrontendTools
+        projectContext={projectContext}
+        selectedScope={selectedScope}
+        onOpenDrilldown={handleOpenDrilldown}
+        dataMinDate={dataMinDate}
+      />
     </div>
   );
 }

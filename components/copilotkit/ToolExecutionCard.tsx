@@ -51,7 +51,7 @@ export function ToolExecutionCard({
       className={cn(
         "w-full max-w-md border shadow-sm bg-muted/20 dark:bg-muted/10",
         isClickable &&
-          "cursor-pointer transition-colors hover:bg-muted/40 hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "cursor-pointer transition-colors bg-primary/5 border-primary/20 hover:bg-primary/10 hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className
       )}
     >
