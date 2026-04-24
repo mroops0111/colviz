@@ -30,8 +30,9 @@ export async function GET(request: Request) {
   const start = parseOptionalDate(url.searchParams.get("start"));
   const end = parseOptionalDate(url.searchParams.get("end"));
 
+  const maxLimit = Number.parseInt(process.env.DRILLDOWN_MAX_LIMIT || "100", 10);
   const limit = Math.min(
-    100,
+    maxLimit,
     Math.max(1, Number.parseInt(url.searchParams.get("limit") || "50", 10))
   );
   const offset = Math.max(
