@@ -404,10 +404,15 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
   }, [data, showNames, selectedBehavior, selectedLinkKey, onLinkClick, onBehaviorDrilldown]);
 
   return (
-    <div className="space-y-4">
-      {/* Behavior filter buttons */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => setSelectedBehavior(null)} variant={selectedBehavior === null ? "default" : "outline"} size="sm">
+    <div className="h-full flex flex-col gap-2">
+      {/* Behavior filter strip — above the card, never overlaps diagram */}
+      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+        <Button
+          onClick={() => setSelectedBehavior(null)}
+          variant={selectedBehavior === null ? "default" : "outline"}
+          size="sm"
+          className="h-7 px-2.5 text-xs"
+        >
           All
         </Button>
         {BEHAVIOR_BUTTON_LIST.map((behavior) => (
@@ -416,16 +421,41 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
             onClick={() => setSelectedBehavior(selectedBehavior === behavior ? null : behavior)}
             variant={selectedBehavior === behavior ? "default" : "outline"}
             size="sm"
-            className="gap-2"
+            className="h-7 px-2.5 text-xs gap-1.5"
           >
-            <div className="w-3 h-3 shrink-0 rounded-full border border-white/80 shadow-sm" style={{ backgroundColor: BEHAVIOR_COLORS[behavior] ?? "#999" }} />
+            <div className="w-2 h-2 shrink-0 rounded-full" style={{ backgroundColor: BEHAVIOR_COLORS[behavior] ?? "#999" }} />
             <span className="capitalize">{behavior}</span>
           </Button>
         ))}
       </div>
 
-      {/* Diagram container */}
-      <div className="relative w-full bg-muted/50 rounded-lg">
+      {/* Diagram card — fills remaining height */}
+      <div className="flex-1 min-h-0 relative rounded-xl border border-border/40 bg-card shadow-sm overflow-hidden">
+
+        {/* Zoom controls — float top-right */}
+        <div className="absolute top-3 right-3 z-10 flex gap-1">
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-7 w-7 rounded-md shadow-sm"
+            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.2)}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon"
+            className="h-7 w-7 rounded-md shadow-sm"
+            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 0.8)}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+
         {/* Node popover */}
         {nodePopover && (
           <>
@@ -482,35 +512,16 @@ export default function ArcDiagram({ data, showNames = true, onLinkClick, onBeha
           </>
         )}
 
-        {/* SVG */}
-        <svg ref={svgRef} style={{ width: "100%", height: "auto" }} />
-
-        {/* Zoom controls */}
-        <div className="absolute top-2 right-2 flex gap-1">
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            className="h-8 w-8 rounded-md shadow"
-            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 1.2)}
-            aria-label="Zoom in"
-          >
-            <ZoomIn className="h-4 w-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon"
-            className="h-8 w-8 rounded-md shadow"
-            onClick={() => svgRef.current && zoomBehaviorRef.current && d3.select(svgRef.current).call(zoomBehaviorRef.current.scaleBy, 0.8)}
-            aria-label="Zoom out"
-          >
-            <ZoomOut className="h-4 w-4" />
-          </Button>
-        </div>
+        {/* SVG fills the full card — preserveAspectRatio centers circle, corners hold overlaid controls */}
+        <svg ref={svgRef} style={{ width: "100%", height: "100%" }} />
       </div>
 
-      <p className="text-sm text-muted-foreground">Total records: {data.length}</p>
+      <p
+        className="text-xs text-muted-foreground shrink-0"
+        title="Directed interaction rows after date, team, and source filters. A→B and B→A are separate if both exist."
+      >
+        Interactions in view: {data.length}
+      </p>
     </div>
   );
 }

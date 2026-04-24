@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { dateToDayLabel } from "@/lib/dayLabel";
+import { dateToDayLabel, totalDaysInRange } from "@/lib/dayLabel";
+import BehaviorTrendChart from "@/components/BehaviorTrendChart";
+import { CollaborationData } from "@/lib/types";
 
 interface TimeRangeFilterProps {
   minDate: Date;
@@ -12,6 +13,15 @@ interface TimeRangeFilterProps {
   startDate: Date;
   endDate: Date;
   onRangeChange: (start: Date, end: Date) => void;
+  /**
+   * Data already filtered by team & source (but NOT by the date range).
+   * Used to render the per-day behavior distribution mini-chart above the slider.
+   */
+  chartData?: CollaborationData[];
+  /** Behaviors to render as separate lines, in display order. */
+  behaviors?: readonly string[];
+  /** Color for each behavior key. */
+  behaviorColors?: Record<string, string>;
 }
 
 export default function TimeRangeFilter({
@@ -20,6 +30,9 @@ export default function TimeRangeFilter({
   startDate,
   endDate,
   onRangeChange,
+  chartData,
+  behaviors,
+  behaviorColors,
 }: TimeRangeFilterProps) {
   const formatDate = (date: Date): string => {
     return dateToDayLabel(date.toISOString(), minDate.toISOString());
@@ -58,26 +71,28 @@ export default function TimeRangeFilter({
   const displayStartDate = new Date(sliderValues[0]);
   const displayEndDate = new Date(sliderValues[1]);
 
-  // Calculate the number of days in the range
-  const totalDays = Math.ceil(
-    (maxTimestamp - minTimestamp) / (1000 * 60 * 60 * 24)
+  // Day labels are 1-indexed and inclusive (Day 1..Day N), so the count must
+  // include both endpoints. e.g. Day 1 to Day 70 is 70 days, not 69.
+  const totalDays = totalDaysInRange(
+    minDate.toISOString(),
+    maxDate.toISOString()
   );
-  const selectedDays = Math.ceil(
-    (sliderValues[1] - sliderValues[0]) / (1000 * 60 * 60 * 24)
+  const selectedDays = totalDaysInRange(
+    displayStartDate.toISOString(),
+    displayEndDate.toISOString()
   );
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 space-y-1">
-          <h2 className="text-base font-semibold">Time Range</h2>
-          <p className="text-xs text-muted-foreground">
-            {formatDate(minDate)} to {formatDate(maxDate)} ({totalDays} days)
-          </p>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-2">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">Time Range</p>
+          <span className="text-[10px] text-muted-foreground/60">{totalDays}d</span>
         </div>
         <Button
-          variant="outline"
+          variant="ghost"
           size="sm"
+          className="h-6 px-2 text-xs"
           onClick={handleReset}
           disabled={isFullRange}
         >
@@ -86,8 +101,18 @@ export default function TimeRangeFilter({
       </div>
 
       <div className="space-y-3">
+        {chartData && behaviors && behaviors.length > 0 && (
+          <BehaviorTrendChart
+            data={chartData}
+            minDate={minDate}
+            maxDate={maxDate}
+            selectedStart={displayStartDate}
+            selectedEnd={displayEndDate}
+            behaviors={behaviors}
+            colors={behaviorColors ?? {}}
+          />
+        )}
         <div className="space-y-2">
-          <Label className="text-xs">Range</Label>
           <div className="px-1">
             <Slider
               min={minTimestamp}
@@ -100,19 +125,13 @@ export default function TimeRangeFilter({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-2">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Start</span>
-            <span className="font-medium">{formatDate(displayStartDate)}</span>
-          </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">End</span>
-            <span className="font-medium">{formatDate(displayEndDate)}</span>
-          </div>
-        </div>
-
-        <div className="text-xs text-muted-foreground">
-          Selected: {selectedDays} days
+        <div className="grid grid-cols-2 gap-x-2 text-[10px] text-muted-foreground">
+          <span className="text-muted-foreground/50">Start</span>
+          <span className="text-right font-medium text-foreground">{formatDate(displayStartDate)}</span>
+          <span className="text-muted-foreground/50">End</span>
+          <span className="text-right font-medium text-foreground">{formatDate(displayEndDate)}</span>
+          <span className="text-muted-foreground/50">Selected</span>
+          <span className="text-right font-medium text-foreground">{selectedDays}d</span>
         </div>
       </div>
     </div>

@@ -39,20 +39,20 @@ runs:
     source: mattermost
     resume_from: s1-summary
 
-  - id: awareness-m2-m3
-    question: Provide the behavior summary.
+  - id: awareness-t1
+    question: Provide the awareness behavior analysis for this team's interaction events.
     model: gpt-5-mini
     dataset: default
     behavior: awareness
-    pairs:
-      - {from_id: M2, to_id: M3}
-      - {from_id: M3, to_id: M2}
+    teams: [T1]
+    day_start: 1
+    day_end: 27
 
-  - id: awareness-m7-m8
-    question: Provide the behavior summary.
+  - id: awareness-t2
+    question: Provide the awareness behavior analysis for this team's interaction events.
     model: gpt-5-mini
     dataset: default
     behavior: awareness
-    pairs:
-      - {from_id: M7, to_id: M8}
-      - {from_id: M8, to_id: M7}
+    teams: [T2]
+    day_start: 1
+    day_end: 27

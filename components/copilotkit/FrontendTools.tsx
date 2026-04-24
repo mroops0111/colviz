@@ -1,40 +1,25 @@
 "use client";
 
-import React, { useCallback, useMemo } from "react";
-import { useCopilotReadable, useFrontendTool } from "@copilotkit/react-core";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  useCopilotReadable,
+  useFrontendTool,
+  useCopilotChatInternal,
+} from "@copilotkit/react-core";
+import type { Message as AGUIMessage, Parameter } from "@copilotkit/shared";
 import { useCopilotChatSuggestions } from "@copilotkit/react-ui";
-import type { Parameter } from "@copilotkit/shared";
 import { List, GitBranch, PanelRightOpen } from "lucide-react";
 import { BEHAVIOR_ORDER } from "../../lib/dataProcessor";
-import type { ProjectContext } from "../../lib/types";
-import { dateToDayLabel, datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
+import type { ProjectContext, SelectedScope } from "../../lib/types";
+import { datetimeToDayLabel, dayNumberToDate } from "../../lib/dayLabel";
+import { getColvizSystemPrompt } from "../../prompts/system-message";
 import { ToolExecutionCard } from "./ToolExecutionCard";
-import type { ToolStatus } from "./ToolExecutionCard";
+import { resolveCardStatusAndHint } from "./toolCardStatus";
+import { SaveReportCard, buildEventsFromMessages } from "./SaveReportCard";
 
-function toolStatusToCardStatus(status: string): ToolStatus {
-  return status === "complete" ? "complete" : status === "executing" ? "executing" : "inProgress";
-}
-
-/** Resolve card status and hint from tool status + result; treat result with error field as failed. */
-function resolveCardStatusAndHint(status: string, result: unknown): { cardStatus: ToolStatus; hint: string } {
-  const baseStatus = toolStatusToCardStatus(status);
-  if (baseStatus !== "complete") {
-    return { cardStatus: baseStatus, hint: "Running…" };
-  }
-  let hasError = false;
-  if (result != null) {
-    try {
-      const data = typeof result === "string" ? JSON.parse(result) : result;
-      hasError = typeof (data as { error?: string })?.error === "string";
-    } catch {
-      // ignore parse errors
-    }
-  }
-  if (hasError) {
-    return { cardStatus: "error", hint: "Failed" };
-  }
-  return { cardStatus: "complete", hint: "Done" };
-}
+// -----------------------------------------------------------------------------
+// URL builders
+// -----------------------------------------------------------------------------
 
 function appendParams(params: URLSearchParams, args: Record<string, unknown>, keys: string[]) {
   for (const k of keys) {
@@ -47,7 +32,17 @@ function appendParams(params: URLSearchParams, args: Record<string, unknown>, ke
 function buildDrilldownUrl(args: Record<string, unknown>): string {
   const p = new URLSearchParams();
   p.set("dataset", (args.dataset as string) || "default");
-  appendParams(p, args, ["behavior", "from_id", "to_id", "start", "end", "source", "team"]);
+  appendParams(p, args, [
+    "behavior",
+    "from_id",
+    "to_id",
+    "start",
+    "end",
+    "source",
+    "team",
+    "offset",
+    "order",
+  ]);
   return `/api/drilldown?${p.toString()}`;
 }
 
@@ -58,107 +53,151 @@ function buildInteractionSummaryUrl(args: Record<string, unknown>): string {
   return `/api/interaction-summary?${p.toString()}`;
 }
 
+// -----------------------------------------------------------------------------
+// Tool parameter schemas
+// -----------------------------------------------------------------------------
+
 const getInteractionEventsParameters: Parameter[] = [
-  { name: "behavior", type: "string", description: "One of: " + BEHAVIOR_ORDER.join(", "), required: true },
-  { name: "from_id", type: "string", description: "Member ID (e.g., M1)", required: true },
-  { name: "to_id", type: "string", description: "Member ID (e.g., M2)", required: true },
+  {
+    name: "behavior",
+    type: "string",
+    description:
+      "Optional behavior filter. One of: " +
+      BEHAVIOR_ORDER.join(", ") +
+      ". Omit to include all behaviors in the same time-series response.",
+    required: false,
+  },
+  {
+    name: "from_id",
+    type: "string",
+    description:
+      "Optional sender member ID (e.g. M1). Omit to include events from every actor in the team scope (recommended for team-level time-series analysis).",
+    required: false,
+  },
+  {
+    name: "to_id",
+    type: "string",
+    description:
+      "Optional receiver member ID (e.g. M2). Omit to include events to every actor in the team scope.",
+    required: false,
+  },
+  { name: "team", type: "string", description: "Team ID (e.g. T2). Recommended scope for time-series queries.", required: false },
+  { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
-  { name: "source", type: "string", description: "Source name (omit for all)", required: false },
-  { name: "team", type: "string", description: "Team name (omit for all)", required: false },
   { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
 
-const listInteractionsParameters: Parameter[] = [
+const getInteractionSummaryParameters: Parameter[] = [
   { name: "behavior", type: "string", description: `Optional filter. One of: ${BEHAVIOR_ORDER.join(", ")}`, required: false },
   { name: "team", type: "string", description: "Team name (omit for all)", required: false },
   { name: "source", type: "string", description: "Source name (omit for all)", required: false },
   { name: "start", type: "number", description: "Start day number (e.g. 1 for Day 1)", required: false },
   { name: "end", type: "number", description: "End day number (e.g. 10 for Day 10)", required: false },
-  { name: "offset", type: "number", description: "Pagination offset (default 0). Use with total_pages in the response to fetch subsequent pages.", required: false },
 ];
+
+// -----------------------------------------------------------------------------
+// Argument validation — strict mode (Mode A): tool calls MUST stay within the
+// user's currently selected UI scope. Behavior is validated against the full
+// enum since the UI doesn't have a behavior filter.
+// -----------------------------------------------------------------------------
+
+const EMPTY_SCOPE_ERROR =
+  "No teams selected in the UI. Ask the user to select teams (and sources) before querying.";
+
+function selectedScopeReady(scope: SelectedScope | undefined): scope is SelectedScope {
+  if (!scope) return false;
+  return scope.teams.length > 0 && scope.sources.length > 0;
+}
+
+function unionMemberIds(scope: SelectedScope): Set<string> {
+  const ids = new Set<string>();
+  for (const list of Object.values(scope.teamMembers)) for (const id of list) ids.add(id);
+  return ids;
+}
 
 function validateBehaviorTeamSource(
   args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  if (!ctx) return null;
-  const behavior = args.behavior as string | undefined;
-  if (behavior?.trim() && !ctx.behaviors.includes(behavior.trim())) {
-    return `Invalid behavior "${behavior}". Allowed: ${ctx.behaviors.join(", ")}.`;
+  if (!scope) return null;
+  if (!selectedScopeReady(scope)) return EMPTY_SCOPE_ERROR;
+
+  const behavior = (args.behavior as string | undefined)?.trim();
+  if (behavior && !BEHAVIOR_ORDER.includes(behavior as (typeof BEHAVIOR_ORDER)[number])) {
+    return `Invalid behavior "${behavior}". Allowed: ${BEHAVIOR_ORDER.join(", ")}.`;
   }
-  const team = args.team as string | undefined;
-  const teamIds = ctx.teams.map((t) => t.id);
-  if (team?.trim() && !teamIds.includes(team.trim())) {
-    return `Invalid team "${team}". Allowed: ${teamIds.join(", ")}.`;
+  const team = (args.team as string | undefined)?.trim();
+  if (team && !scope.teams.includes(team)) {
+    return `Team "${team}" is outside the user's current selection. Allowed: ${scope.teams.join(", ")}.`;
   }
-  const source = args.source as string | undefined;
-  if (source?.trim() && !ctx.sources.includes(source.trim())) {
-    return `Invalid source "${source}". Allowed: ${ctx.sources.join(", ")}.`;
+  const source = (args.source as string | undefined)?.trim();
+  if (source && !scope.sources.includes(source)) {
+    return `Source "${source}" is outside the user's current selection. Allowed: ${scope.sources.join(", ")}.`;
+  }
+
+  if (scope.dayRange) {
+    const start = args.start != null ? Number(args.start) : null;
+    const end = args.end != null ? Number(args.end) : null;
+    if (start != null && !Number.isNaN(start) && start < scope.dayRange.start) {
+      return `start=${start} is before the selected day range (Day ${scope.dayRange.start}–Day ${scope.dayRange.end}).`;
+    }
+    if (end != null && !Number.isNaN(end) && end > scope.dayRange.end) {
+      return `end=${end} is after the selected day range (Day ${scope.dayRange.start}–Day ${scope.dayRange.end}).`;
+    }
   }
   return null;
 }
 
-function getAllowedActorIds(ctx: ProjectContext | undefined): Set<string> {
-  if (!ctx) return new Set();
-  return new Set(ctx.members.map((m) => m.id));
-}
-
-function actorIdInSet(id: string, allowedIds: Set<string>): boolean {
-  const trimmed = id.trim();
-  if (allowedIds.has(trimmed)) return true;
-  const lower = trimmed.toLowerCase();
-  return [...allowedIds].some((a) => a.toLowerCase() === lower);
-}
-
-function memberIdError(id: string, allowedIds: Set<string>, param: "from_id" | "to_id" = "from_id"): string {
-  const ids = Array.from(allowedIds).slice(0, 20);
-  return `Invalid ${param} "${id}". Use a member ID (e.g. ${ids.join(", ")}${allowedIds.size > 20 ? "…" : ""}).`;
-}
-
-function validateListInteractions(
-  args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
-): string | null {
-  return validateBehaviorTeamSource(args, ctx);
+function memberOutOfScopeError(
+  id: string,
+  scope: SelectedScope,
+  param: "from_id" | "to_id"
+): string {
+  const ids = Array.from(unionMemberIds(scope));
+  const sample = ids.slice(0, 20).join(", ");
+  return `${param} "${id}" is outside the user's current team selection. Allowed members: ${sample}${ids.length > 20 ? "…" : ""}.`;
 }
 
 function validateGetInteractionEvents(
   args: Record<string, unknown>,
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  const err = validateBehaviorTeamSource(args, ctx);
+  const err = validateBehaviorTeamSource(args, scope);
   if (err) return err;
-  if (!ctx) return null;
-  const allowedIds = getAllowedActorIds(ctx);
-  const from_id = args.from_id as string | undefined;
-  if (from_id?.trim() && !actorIdInSet(from_id, allowedIds)) return memberIdError(from_id, allowedIds, "from_id");
-  const to_id = args.to_id as string | undefined;
-  if (to_id?.trim() && !actorIdInSet(to_id, allowedIds)) return memberIdError(to_id, allowedIds, "to_id");
+  // If we got here, scope is either undefined (no error to raise) or fully ready.
+  if (!scope) return null;
+  const allowed = unionMemberIds(scope);
+  const from_id = (args.from_id as string | undefined)?.trim();
+  if (from_id && !allowed.has(from_id)) return memberOutOfScopeError(from_id, scope, "from_id");
+  const to_id = (args.to_id as string | undefined)?.trim();
+  if (to_id && !allowed.has(to_id)) return memberOutOfScopeError(to_id, scope, "to_id");
   return null;
 }
 
 function validateOpenDrilldown(
   args: { from_id?: string; to_id?: string },
-  ctx: ProjectContext | undefined
+  scope: SelectedScope | undefined
 ): string | null {
-  if (!ctx) return null;
-  const allowedIds = getAllowedActorIds(ctx);
+  if (!scope) return null;
+  if (!selectedScopeReady(scope)) return EMPTY_SCOPE_ERROR;
+  const allowed = unionMemberIds(scope);
   const from_id = args.from_id?.trim();
-  if (from_id && !actorIdInSet(from_id, allowedIds)) return memberIdError(from_id, allowedIds, "from_id");
+  if (from_id && !allowed.has(from_id)) return memberOutOfScopeError(from_id, scope, "from_id");
   const to_id = args.to_id?.trim();
-  if (to_id && !actorIdInSet(to_id, allowedIds)) return memberIdError(to_id, allowedIds, "to_id");
+  if (to_id && !allowed.has(to_id)) return memberOutOfScopeError(to_id, scope, "to_id");
   return null;
 }
 
-export interface FrontendToolsProps {
-  onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
-  projectContext?: ProjectContext;
-  dataMinDate?: string;
-}
+// -----------------------------------------------------------------------------
+// Day-number → ISO conversion + payload anonymization
+// -----------------------------------------------------------------------------
 
 /** Convert day-number args (start/end) to ISO date strings for API calls. */
-function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | undefined): Record<string, unknown> {
+function convertDayArgs(
+  args: Record<string, unknown>,
+  dataMinDate: string | undefined
+): Record<string, unknown> {
   if (!dataMinDate) return args;
   const result = { ...args };
   const startDay = args.start != null ? Number(args.start) : null;
@@ -172,7 +211,7 @@ function convertDayArgs(args: Record<string, unknown>, dataMinDate: string | und
   return result;
 }
 
-/** Build a name→id map from project context members and teams (mirrors DatasetContext.name_map in api_client.py). */
+/** Build a name→id map from project context (mirrors DatasetContext.name_map in api_client.py). */
 function buildNameMap(ctx: ProjectContext | undefined): Map<string, string> {
   const map = new Map<string, string>();
   if (!ctx) return map;
@@ -187,69 +226,154 @@ function replaceWithId(value: unknown, nameMap: Map<string, string>): unknown {
   return value;
 }
 
-const PAYLOAD_NAME_KEYS = new Set(["members", "team", "teams"]);
+// Payload keys whose string/array values are real names → anonymize to IDs.
+const PAYLOAD_NAME_KEYS = new Set(["members"]);
+// Payload keys to drop entirely (redundant with top-level event fields or internal metadata).
+const PAYLOAD_DROP_KEYS = new Set(["rowIndex", "datetime", "team", "teams"]);
+// Meeting-specific keys that duplicate title/content or contain raw names.
+const MEETING_DROP_SUFFIXES = ["-intra", "-inter", "-subject", "-description"];
+const MEETING_DROP_KEYS = new Set(["meetingGoal"]);
 
-/** Replace name fields in rawItem.payload with actor IDs (mirrors _anonymize_event in api_client.py). */
-function anonymizePayload(event: Record<string, unknown>, nameMap: Map<string, string>): Record<string, unknown> {
-  const rawItem = event.rawItem;
-  if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) return event;
-  const ri = rawItem as Record<string, unknown>;
-  const payload = ri.payload;
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return event;
-  const cleanPayload = Object.fromEntries(
-    Object.entries(payload as Record<string, unknown>).map(([k, v]) =>
-      PAYLOAD_NAME_KEYS.has(k) ? [k, replaceWithId(v, nameMap)] : [k, v]
-    )
-  );
-  return { ...event, rawItem: { ...ri, payload: cleanPayload } };
+function shouldDropMeetingKey(k: string): boolean {
+  return MEETING_DROP_KEYS.has(k) || MEETING_DROP_SUFFIXES.some((s) => k.endsWith(s));
 }
 
-/** Anonymize a single drilldown event: strip names, replace payload IDs, convert dates to Day N. */
-function anonymizeEvent(e: unknown, dataMinDate: string | undefined, nameMap: Map<string, string>): Record<string, unknown> {
-  const { from, to, ...ev } = e as Record<string, unknown>;
-  const dated = {
-    ...ev,
-    ...(dataMinDate && typeof ev.date === "string" ? { date: dateToDayLabel(ev.date, dataMinDate) } : {}),
-    ...(dataMinDate && typeof ev.datetime === "string" ? { datetime: datetimeToDayLabel(ev.datetime, dataMinDate) } : {}),
+/**
+ * Slim a drilldown event down to the fields the LLM actually reasons about.
+ *
+ * Drops: real names (`from`, `to`, `team`), opaque IDs (`id`, `rawItem.id`,
+ * `rawItem.sourceItemId`, `rawItem.sourceItemType`, `rawItem.contentFormat`),
+ * and the redundant `date` field (datetime already encodes the day with HH:MM:SS).
+ *
+ * Payload cleanup: drops empty-string values and internal metadata keys
+ * (`rowIndex`, `datetime`). Flattens `rawItem.{title, content, payload}` onto
+ * the event itself. Payload names are anonymized to IDs.
+ */
+function slimEvent(
+  e: unknown,
+  dataMinDate: string | undefined,
+  nameMap: Map<string, string>
+): Record<string, unknown> {
+  const ev = e as Record<string, unknown>;
+  const datetimeStr =
+    dataMinDate && typeof ev.datetime === "string"
+      ? datetimeToDayLabel(ev.datetime, dataMinDate)
+      : ev.datetime;
+
+  const slim: Record<string, unknown> = {
+    datetime: datetimeStr,
+    behavior: ev.behavior,
+    source: ev.source,
+    scope: ev.scope,
+    team_id: ev.team_id,
+    from_id: ev.from_id,
+    to_id: ev.to_id,
+    weight: ev.weight,
   };
-  return anonymizePayload(dated, nameMap);
+
+  const rawItem = ev.rawItem;
+  if (rawItem && typeof rawItem === "object" && !Array.isArray(rawItem)) {
+    const ri = rawItem as Record<string, unknown>;
+    if (ri.title != null) slim.title = ri.title;
+    if (ri.content != null) slim.content = ri.content;
+    if (ri.payload && typeof ri.payload === "object" && !Array.isArray(ri.payload)) {
+      const isMeeting = ev.source === "meeting";
+      const cleanPayload = Object.fromEntries(
+        Object.entries(ri.payload as Record<string, unknown>)
+          .filter(([k, v]) => !PAYLOAD_DROP_KEYS.has(k) && v !== "" && !(isMeeting && shouldDropMeetingKey(k)))
+          .map(([k, v]) => PAYLOAD_NAME_KEYS.has(k) ? [k, replaceWithId(v, nameMap)] : [k, v])
+      );
+      if (Object.keys(cleanPayload).length > 0) slim.payload = cleanPayload;
+    }
+  }
+
+  return slim;
 }
 
-export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: FrontendToolsProps = {}) {
-  // Default suggestions: cumulative N-day summaries using stage end days as milestones
+// -----------------------------------------------------------------------------
+// Component
+// -----------------------------------------------------------------------------
+
+export interface FrontendToolsProps {
+  onOpenDrilldown?: (args: { from_id: string; to_id: string }) => void;
+  /** Full dataset — used only for name→id mapping when post-processing tool results. Never sent to the LLM. */
+  projectContext?: ProjectContext;
+  /** User's current UI selection — exposed to the LLM via useCopilotReadable. */
+  selectedScope?: SelectedScope;
+  dataMinDate?: string;
+}
+
+export function FrontendTools({
+  onOpenDrilldown,
+  projectContext,
+  selectedScope,
+  dataMinDate,
+}: FrontendToolsProps = {}) {
+  // NOTE: deliberately use the *internal* hook here. In this version of
+  // CopilotKit the public `useCopilotMessagesContext` returns a state slot
+  // that nothing populates (the live chat log lives on the agent), and
+  // `useCopilotChat` strips the `messages` field from its return type. The
+  // internal hook is the only OSS-friendly way to read AG-UI messages + the
+  // current threadId in a single reactive subscription.
+  const chat = useCopilotChatInternal() as unknown as {
+    messages: AGUIMessage[];
+    threadId?: string;
+  };
+
+  // useFrontendTool only captures the initial handler reference, so the
+  // handler closure can otherwise see a stale `messages` array. Mirror the
+  // latest values into refs on every render so the handler always reads
+  // them fresh.
+  const messagesRef = useRef<AGUIMessage[]>(chat.messages);
+  const threadIdRef = useRef<string | undefined>(chat.threadId);
+  useEffect(() => {
+    messagesRef.current = chat.messages;
+  }, [chat.messages]);
+  useEffect(() => {
+    threadIdRef.current = chat.threadId;
+  }, [chat.threadId]);
+
+  // Suggestions: one per selected team. Keep the chat message minimal — all
+  // analysis context (day range, sources, member IDs per team) is already in
+  // the readable below and the system prompt.
   const suggestions = useMemo(() => {
-    const stages = projectContext?.stages ?? [];
-    if (stages.length === 0) return [];
-    return stages.map((s) => ({
-      title: `${s.name} collaboration summary`,
-      message: `Provide a collaboration summary from Day ${s.startDay} to Day ${s.endDay}. Include key behavior patterns, notable member pairs, and any areas that may need attention.`,
+    if (!selectedScope || selectedScope.teams.length === 0) return [];
+    return selectedScope.teams.map((teamId) => ({
+      title: `${teamId} Collaboration Summary`,
+      message: `Analyze ${teamId} collaboration with detailed events and save the report`,
     }));
-  }, [projectContext?.stages]);
+  }, [selectedScope]);
   useCopilotChatSuggestions(
     {
       suggestions,
-      available: suggestions.length > 0 ? "before-first-message" : "disabled",
+      available: "before-first-message",
     },
-    [suggestions],
+    [suggestions]
   );
 
+  // Readable sent to the LLM: anonymized (IDs only) and scoped to the user's
+  // current UI filter. dataRange.totalDays is from the full dataset so the
+  // model still understands the absolute timeline.
   const readableValue = useMemo(
     () =>
-      projectContext
+      selectedScope
         ? {
-            sources: projectContext.sources,
-            teams: projectContext.teams,
-            members: projectContext.members,
-            behaviors: projectContext.behaviors,
-            dataRange: projectContext.dataRange,
+            selected: {
+              sources: selectedScope.sources,
+              teams: selectedScope.teams,
+              teamMembers: selectedScope.teamMembers,
+              dayRange: selectedScope.dayRange,
+            },
+            behaviors: [...BEHAVIOR_ORDER],
+            dataRange: projectContext?.dataRange,
           }
         : null,
-    [projectContext]
+    [selectedScope, projectContext?.dataRange]
   );
   useCopilotReadable(
     {
       description:
-        "ColViz dataset context: allowed sources, teams, members (ID + name), and behaviors.",
+        "ColViz scope the user is currently viewing. `selected` reflects the active UI filters (sources, teams, members per team, day range in Day-N units) — tool calls MUST stay within this scope. `behaviors` is the full enum. `dataRange.totalDays` describes the full dataset timeline.",
       value: readableValue,
       available: readableValue ? "enabled" : "disabled",
     },
@@ -259,27 +383,43 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
   useFrontendTool({
     name: "getInteractionEvents",
     description:
-      "Get detailed collaboration events and raw data for interactions between two members (from_id → to_id), filtered by behavior, team, source, start, end.",
+      "Stream the raw collaboration events (chronological, ascending) for a scope. Each row contains who→whom, datetime (Day-N HH:MM:SS), behavior, and the underlying message/title/payload. Prefer team-scoped queries (team + start + end) so the timeline stays unified instead of being fanned out across directed pairs; provide from_id/to_id only when zooming into one edge. Returns events only — no aggregate counts. For totals or distributions across pairs/behaviors/days, call getInteractionSummary first.",
     parameters: getInteractionEventsParameters,
+    followUp: true,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
-        const err = validateGetInteractionEvents(args, projectContext);
+        const err = validateGetInteractionEvents(args, selectedScope);
         if (err) return JSON.stringify({ error: err, events: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
+        // ASC for human/AI-friendly chronological reading.
+        apiArgs.order = "asc";
         const res = await fetch(buildDrilldownUrl(apiArgs));
-        const json = (await res.json()) as { events?: unknown[]; total?: number; error?: string };
+        const json = (await res.json()) as {
+          events?: unknown[];
+          total?: number;
+          limit?: number;
+          offset?: number;
+          total_pages?: number;
+          error?: string;
+        };
         if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", events: [], total: 0 });
         const nameMap = buildNameMap(projectContext);
-        const events = (json.events ?? []).map((e) => anonymizeEvent(e, dataMinDate, nameMap));
-        return JSON.stringify({ events, total: json.total ?? 0 });
+        const events = (json.events ?? []).map((e) => slimEvent(e, dataMinDate, nameMap));
+        return JSON.stringify({
+          events,
+          total: json.total ?? 0,
+          limit: json.limit,
+          offset: json.offset,
+          total_pages: json.total_pages,
+        });
       },
-      [projectContext, dataMinDate]
+      [projectContext, selectedScope, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Query interaction events"
+          title="Get interaction events"
           icon={List}
           status={cardStatus}
           hint={hint}
@@ -289,32 +429,53 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
   });
 
   useFrontendTool({
-    name: "listInteractions",
+    name: "getInteractionSummary",
     description:
-      "List brief collaboration interaction summaries with counts, filtered by behavior, team, source, start, end.",
-    parameters: listInteractionsParameters,
+      "Get aggregate counts for a scope — the 'shape' of the data, not the events themselves. The response carries a `summary` block ({ total_events, by_behavior, by_day }) for the entire filtered set, plus an `interactions` array with one row per (from_id, to_id, behavior) and that pair's count. No event content is included. Use this first to understand volume / who-interacts-with-whom / day distribution; then call getInteractionEvents to read what was actually said.",
+    parameters: getInteractionSummaryParameters,
+    followUp: true,
     handler: useCallback(
       async (args: Record<string, unknown>) => {
-        const err = validateListInteractions(args, projectContext);
-        if (err) return JSON.stringify({ error: err, summaries: [], total: 0 });
+        const err = validateBehaviorTeamSource(args, selectedScope);
+        if (err) return JSON.stringify({ error: err, summary: null, interactions: [], total: 0 });
         const apiArgs = convertDayArgs(args, dataMinDate);
         const res = await fetch(buildInteractionSummaryUrl(apiArgs));
-        const json = (await res.json()) as { summaries?: unknown[]; total?: number; error?: string };
-        if (!res.ok) return JSON.stringify({ error: json.error ?? "Request failed", summaries: [], total: 0 });
-        // Strip real names (from_name/to_name) from summaries
-        const summaries = (json.summaries ?? []).map((s) => {
+        const json = (await res.json()) as {
+          summary?: unknown;
+          summaries?: unknown[];
+          pair_count?: number;
+          capped?: boolean;
+          error?: string;
+        };
+        if (!res.ok) {
+          return JSON.stringify({
+            error: json.error ?? "Request failed",
+            summary: null,
+            interactions: [],
+            total: 0,
+          });
+        }
+        // Strip real names (from_name/to_name) from each per-pair row.
+        const interactions = (json.summaries ?? []).map((s) => {
           const { from_name, to_name, ...rest } = s as Record<string, unknown>;
+          void from_name;
+          void to_name;
           return rest;
         });
-        return JSON.stringify({ summaries, total: json.total ?? 0 });
+        return JSON.stringify({
+          summary: json.summary ?? null,
+          interactions,
+          pair_count: json.pair_count ?? 0,
+          ...(json.capped ? { capped: true } : {}),
+        });
       },
-      [projectContext, dataMinDate]
+      [selectedScope, dataMinDate]
     ),
     render: ({ status, result }: { args: Record<string, unknown>; result: unknown; status: string }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
       return (
         <ToolExecutionCard
-          title="Query interactions by behavior"
+          title="Get interaction summary"
           icon={GitBranch}
           status={cardStatus}
           hint={hint}
@@ -331,9 +492,10 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
       { name: "from_id", type: "string", description: "Member ID", required: true },
       { name: "to_id", type: "string", description: "Member ID", required: true },
     ],
+    followUp: true,
     handler: useCallback(
       async (args: { from_id: string; to_id: string }) => {
-        const err = validateOpenDrilldown(args, projectContext);
+        const err = validateOpenDrilldown(args, selectedScope);
         if (err) return JSON.stringify({ success: false, error: err });
         onOpenDrilldown?.(args);
         return JSON.stringify({
@@ -341,7 +503,7 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
           message: `Opened event drawer for ${args.from_id} → ${args.to_id}.`,
         });
       },
-      [onOpenDrilldown, projectContext]
+      [onOpenDrilldown, selectedScope]
     ),
     render: ({ status, result }: { args: { from_id?: string; to_id?: string }; status: string; result: unknown }) => {
       const { cardStatus, hint } = resolveCardStatusAndHint(status, result);
@@ -354,6 +516,70 @@ export function FrontendTools({ onOpenDrilldown, projectContext, dataMinDate }: 
         />
       );
     },
+  });
+
+  useFrontendTool({
+    name: "saveAnalysisReport",
+    description:
+      "Persist the full analysis answer for the current user question to a markdown report on disk. " +
+      "MUST be called instead of replying with the analysis inline in the chat. " +
+      "The frontend automatically attaches the system prompt, the user prompt, and any prior tool calls/results from this conversation; " +
+      "you only need to provide the final analysis content as the `answer` parameter.",
+    parameters: [
+      {
+        name: "answer",
+        type: "string",
+        description:
+          "The complete analysis content to save, in markdown. Should fully answer the user's latest question; do not summarize or truncate.",
+        required: true,
+      },
+    ],
+    followUp: false,
+    handler: useCallback(async (args: { answer: string }) => {
+      const answer = (args.answer ?? "").trim();
+      if (!answer) {
+        return JSON.stringify({ success: false, error: "answer is required" });
+      }
+      const currentThreadId = threadIdRef.current;
+      if (!currentThreadId) {
+        return JSON.stringify({
+          success: false,
+          error: "No active chat thread id; cannot determine report filename.",
+        });
+      }
+      // Read messages from ref so we always pick up the most recent log,
+      // not the snapshot at the time useFrontendTool first registered.
+      const events = buildEventsFromMessages(messagesRef.current, answer);
+      const res = await fetch("/api/save-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: currentThreadId,
+          systemPrompt: getColvizSystemPrompt(),
+          events,
+        }),
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        path?: string;
+        eventCount?: number;
+        error?: string;
+      };
+      if (!res.ok || !json.success) {
+        return JSON.stringify({
+          success: false,
+          error: json.error ?? "Failed to save report",
+        });
+      }
+      return JSON.stringify({
+        success: true,
+        message: `Saved analysis report (${json.eventCount} event(s)) to ${json.path}.`,
+        path: json.path,
+      });
+    }, []),
+    render: ({ status, result }: { args: { answer?: string }; status: string; result: unknown }) => (
+      <SaveReportCard status={status} result={result} />
+    ),
   });
 
   return null;

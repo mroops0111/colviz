@@ -23,6 +23,14 @@ def iso_to_day_label(iso_str: str, min_date_iso: str) -> str:
     return f"Day {(target - base).days + 1}"
 
 
+def iso_to_day_datetime_label(iso_str: str, min_date_iso: str) -> str:
+    """Convert an ISO datetime to 'Day N HH:MM:SS'. Mirrors datetimeToDayLabel() in lib/dayLabel.ts."""
+    base = _start_of_day(datetime.fromisoformat(min_date_iso.replace("Z", "")))
+    dt = datetime.fromisoformat(iso_str.replace("Z", ""))
+    day_num = (_start_of_day(dt) - base).days + 1
+    return f"Day {day_num} {dt.strftime('%H:%M:%S')}"
+
+
 # ── dataset context ───────────────────────────────────────────────────────────
 
 class DatasetContext:
@@ -48,7 +56,17 @@ class DatasetContext:
 
 # ── anonymization ─────────────────────────────────────────────────────────────
 
-_PAYLOAD_NAME_KEYS = frozenset({"members", "team", "teams"})
+# Payload keys whose string/array values are real names → anonymize to IDs.
+_PAYLOAD_NAME_KEYS = frozenset({"members"})
+# Payload keys to drop entirely (redundant with top-level event fields or internal metadata).
+_PAYLOAD_DROP_KEYS = frozenset({"rowIndex", "datetime", "team", "teams"})
+# Meeting-specific keys that duplicate title/content or contain raw names.
+_MEETING_DROP_SUFFIXES = ("-intra", "-inter", "-subject", "-description")
+_MEETING_DROP_KEYS = frozenset({"meetingGoal"})
+
+
+def _should_drop_meeting_key(k: str) -> bool:
+    return k in _MEETING_DROP_KEYS or k.endswith(_MEETING_DROP_SUFFIXES)
 
 
 def _anonymize_summary(s: dict) -> dict:
@@ -56,33 +74,61 @@ def _anonymize_summary(s: dict) -> dict:
     return {k: v for k, v in s.items() if k not in ("from_name", "to_name")}
 
 
-def _anonymize_event(e: dict, min_date: str | None, ctx: "DatasetContext") -> dict:
-    """Replace real names with IDs and convert date fields to Day N labels."""
-    result = {k: v for k, v in e.items() if k not in ("from", "to")}
+def _clean_payload(payload: dict, ctx: "DatasetContext", source: str = "") -> dict:
+    """Replace real names inside payload's name-bearing keys with actor IDs.
+    Drops empty-string values, internal metadata keys (rowIndex, datetime),
+    and meeting-specific keys that duplicate title/content (*-intra, *-inter,
+    *-subject, *-description, meetingGoal).
+    """
+    is_meeting = source == "meeting"
+    clean: dict = {}
+    for k, v in payload.items():
+        if k in _PAYLOAD_DROP_KEYS or v == "":
+            continue
+        if is_meeting and _should_drop_meeting_key(k):
+            continue
+        if k in _PAYLOAD_NAME_KEYS:
+            if isinstance(v, list):
+                clean[k] = [ctx.replace(n) if isinstance(n, str) else n for n in v]
+            elif isinstance(v, str):
+                clean[k] = ctx.replace(v)
+            else:
+                clean[k] = v
+        else:
+            clean[k] = v
+    return clean
 
-    if min_date:
-        if isinstance(result.get("date"), str):
-            result["date"] = iso_to_day_label(result["date"], min_date)
-        if isinstance(result.get("datetime"), str):
-            result["datetime"] = iso_to_day_label(result["datetime"], min_date)
 
-    # Replace name fields inside rawItem.payload with actor IDs
-    raw_item = result.get("rawItem")
+def _slim_event(e: dict, min_date: str | None, ctx: "DatasetContext") -> dict:
+    """Slim an event for AI consumption: drop opaque IDs, real names, and the
+    duplicated `date` field; flatten rawItem.{title, content, payload} to top
+    level; convert datetime to 'Day N HH:MM:SS' so time-of-day is preserved.
+    Mirrors slimEvent() in components/copilotkit/FrontendTools.tsx.
+    """
+    slim: dict = {}
+
+    if min_date and isinstance(e.get("datetime"), str):
+        slim["datetime"] = iso_to_day_datetime_label(e["datetime"], min_date)
+    elif "datetime" in e:
+        slim["datetime"] = e["datetime"]
+
+    for k in ("behavior", "source", "scope", "team_id", "from_id", "to_id", "weight"):
+        if k in e:
+            slim[k] = e[k]
+
+    raw_item = e.get("rawItem")
     if isinstance(raw_item, dict):
+        if raw_item.get("title") is not None:
+            slim["title"] = raw_item["title"]
+        if raw_item.get("content") is not None:
+            slim["content"] = raw_item["content"]
         payload = raw_item.get("payload")
         if isinstance(payload, dict):
-            clean: dict = {}
-            for k, v in payload.items():
-                if k in _PAYLOAD_NAME_KEYS:
-                    if isinstance(v, list):
-                        clean[k] = [ctx.replace(n) if isinstance(n, str) else n for n in v]
-                    elif isinstance(v, str):
-                        clean[k] = ctx.replace(v)
-                else:
-                    clean[k] = v
-            result["rawItem"] = {**raw_item, "payload": clean}
+            clean = _clean_payload(payload, ctx, source=e.get("source", ""))
+            if clean:
+                slim["payload"] = clean
 
-    return result
+    return slim
 
 
 # ── API client ────────────────────────────────────────────────────────────────
@@ -120,7 +166,7 @@ class ApiClient:
 
     # ── tool endpoints ────────────────────────────────────────────────────────
 
-    async def list_interactions(
+    async def get_interaction_summary(
         self,
         dataset: str,
         min_date: str | None,
@@ -130,9 +176,18 @@ class ApiClient:
         source: str | None = None,
         start: int | None = None,
         end: int | None = None,
-        offset: int | None = None,
     ) -> dict:
-        """GET /api/interaction-summary"""
+        """GET /api/interaction-summary
+
+        Owns *all* aggregate views for the AI: a `summary` block
+        ({ total_events, by_behavior, by_day }) for the entire filtered set,
+        plus an `interactions` array with ALL (from_id, to_id, behavior) pairs,
+        sorted by behavior (awareness → sharing → coordination → improving)
+        then count desc. No pagination.
+
+        Returns: { summary: { event_count, by_behavior, by_day }, interactions, pair_count }
+        and optionally { capped: true } if the hard cap of 500 pairs was hit.
+        """
         params: dict[str, str] = {"dataset": dataset}
         if behavior:
             params["behavior"] = behavior
@@ -144,37 +199,51 @@ class ApiClient:
             params["start"] = day_to_iso(start, min_date)
         if end is not None and min_date:
             params["end"] = day_to_iso(end, min_date)
-        if offset is not None:
-            params["offset"] = str(offset)
 
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(f"{self.base_url}/api/interaction-summary", params=params)
             r.raise_for_status()
             data = r.json()
-            data["summaries"] = [_anonymize_summary(s) for s in data.get("summaries", [])]
-            return data
+
+        interactions = [_anonymize_summary(s) for s in data.get("summaries", [])]
+        result: dict = {
+            "summary": data.get("summary"),
+            "interactions": interactions,
+            "pair_count": data.get("pair_count", len(interactions)),
+        }
+        if data.get("capped"):
+            result["capped"] = True
+        return result
 
     async def get_interaction_events(
         self,
         dataset: str,
         min_date: str | None,
         *,
-        behavior: str,
-        from_id: str,
-        to_id: str,
+        behavior: str | None = None,
+        from_id: str | None = None,
+        to_id: str | None = None,
         start: int | None = None,
         end: int | None = None,
         source: str | None = None,
         team: str | None = None,
         offset: int | None = None,
     ) -> dict:
-        """GET /api/drilldown"""
-        params: dict[str, str] = {
-            "dataset": dataset,
-            "behavior": behavior,
-            "from_id": from_id,
-            "to_id": to_id,
-        }
+        """GET /api/drilldown
+
+        Pure event stream — no aggregates. For totals / breakdowns call
+        `get_interaction_summary` first.
+
+        Returns: { events, total, limit, offset, total_pages }
+        Events are sorted ascending by datetime.
+        """
+        params: dict[str, str] = {"dataset": dataset, "order": "asc"}
+        if behavior:
+            params["behavior"] = behavior
+        if from_id:
+            params["from_id"] = from_id
+        if to_id:
+            params["to_id"] = to_id
         if source:
             params["source"] = source
         if team:
@@ -191,5 +260,10 @@ class ApiClient:
             r = await client.get(f"{self.base_url}/api/drilldown", params=params)
             r.raise_for_status()
             data = r.json()
-            data["events"] = [_anonymize_event(e, min_date, ctx) for e in data.get("events", [])]
-            return data
+
+        events = [_slim_event(e, min_date, ctx) for e in data.get("events", [])]
+        result: dict = {"events": events}
+        for k in ("total", "limit", "offset", "total_pages"):
+            if k in data:
+                result[k] = data[k]
+        return result

@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
-import { calcTotalPages, parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
-import { queryListInteractionSummaries } from "@/lib/copilotQueries";
+import { parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
+import { queryListInteractionSummaries, summarizeInteractions } from "@/lib/copilotQueries";
+import { prisma } from "@/lib/db";
 
 export const runtime = "nodejs";
 
 /**
- * GET /api/interaction-summary - List collaboration interaction summaries (aggregated by from, to, behavior).
- * Accepts singular (team, source) or plural (teams, sources) query params. Limit optional (default 50).
+ * GET /api/interaction-summary - Owns *all* aggregate views for the AI:
+ * per (from, to, behavior) counts plus a full-scope `summary` block
+ * (total_events, by_behavior, by_day) for the entire filtered set.
+ *
+ * Accepts singular (team, source) or plural (teams, sources) query params.
+ * Returns ALL pairs sorted by behavior (BEHAVIOR_ORDER) then count desc.
+ * Hard cap: 500 pairs (capped:true added to response if exceeded).
  */
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -22,22 +28,39 @@ export async function GET(request: Request) {
   );
   const start = parseOptionalDate(url.searchParams.get("start"));
   const end = parseOptionalDate(url.searchParams.get("end"));
-  const limit = Math.min(
-    100,
-    Math.max(1, Number.parseInt(url.searchParams.get("limit") || "50", 10))
-  );
+  const filters = {
+    behavior,
+    sources: sources.length > 0 ? sources : undefined,
+    teams: teams.length > 0 ? teams : undefined,
+    start: start?.toISOString(),
+    end: end?.toISOString(),
+  };
 
-  const { summaries, total } = await queryListInteractionSummaries(
-    datasetName,
-    {
-      behavior,
-      sources: sources.length > 0 ? sources : undefined,
-      teams: teams.length > 0 ? teams : undefined,
-      start: start?.toISOString(),
-      end: end?.toISOString(),
-    },
-    limit
-  );
+  // by_day buckets need the dataset's earliest occurredAt as Day 1.
+  const dataset = await prisma.dataset.findUnique({
+    where: { name: datasetName },
+    select: { id: true },
+  });
+  const minIsoPromise = dataset
+    ? prisma.interaction
+        .aggregate({
+          where: { datasetId: dataset.id },
+          _min: { occurredAt: true },
+        })
+        .then((r) => r._min.occurredAt?.toISOString() ?? null)
+    : Promise.resolve(null);
 
-  return NextResponse.json({ dataset: datasetName, summaries, total, limit, total_pages: calcTotalPages(total, limit) });
+  const [{ summaries, pair_count, capped }, minIso] = await Promise.all([
+    queryListInteractionSummaries(datasetName, filters),
+    minIsoPromise,
+  ]);
+  const summary = await summarizeInteractions(datasetName, filters, minIso);
+
+  return NextResponse.json({
+    dataset: datasetName,
+    summary,
+    summaries,
+    pair_count,
+    ...(capped ? { capped: true } : {}),
+  });
 }

@@ -1,8 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import {
   Sheet,
   SheetContent,
@@ -77,49 +76,11 @@ function RawPayloadDetails({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-// Stable custom components for ReactMarkdown (avoid re-creating on every MessageContent render)
-const MARKDOWN_COMPONENTS = {
-  a: ({ href, children }: { href?: string | null; children?: React.ReactNode }) => (
-    <a href={href ?? "#"} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  ),
-  code: ({
-    className,
-    children,
-    ...props
-  }: {
-    className?: string;
-    children?: React.ReactNode;
-  } & React.ComponentPropsWithoutRef<"code">) => {
-    const isBlock = typeof className === "string" && className.startsWith("language-");
-    if (isBlock) {
-      return <code className={className} {...props}>{children}</code>;
-    }
-    return (
-      <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono" {...props}>
-        {children}
-      </code>
-    );
-  },
-  pre: ({ children }: { children?: React.ReactNode }) => (
-    <pre className="rounded bg-muted p-3 overflow-x-auto my-2 text-xs font-mono [&>code]:bg-transparent [&>code]:p-0">
-      {children}
-    </pre>
-  ),
-};
-
-/** Render message content as full markdown (via react-markdown): links, code blocks, bold, lists, etc. */
+/** Render message content using the shared MarkdownContent component. */
 function MessageContent({ content }: { content: string }) {
-  const raw = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  if (!raw) return <span className="text-muted-foreground">—</span>;
-  return (
-    <div className="markdown-body text-sm min-w-0 whitespace-pre-wrap break-words [&_a]:text-primary [&_a]:underline [&_a:hover]:no-underline [&_a]:break-all [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-xs [&_code]:font-mono [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:overflow-x-auto [&_pre_code]:bg-transparent [&_pre_code]:p-0">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-        {raw}
-      </ReactMarkdown>
-    </div>
-  );
+  // EventDrawer shows raw chat messages, where user-typed newlines should be
+  // preserved (e.g. line breaks within a single Mattermost post).
+  return <MarkdownContent content={content} preserveWhitespace />;
 }
 
 /** Format datetime for thread list as "Day N HH:mm:ss" */
@@ -339,23 +300,23 @@ function EventCard({
   dataMinDate,
 }: EventCardProps) {
   return (
-    <Card className="text-sm">
+    <Card className="text-xs">
       <CardHeader
-        className="p-3 cursor-pointer"
+        className="p-2.5 cursor-pointer"
         onClick={() => onToggleExpand(event.id)}
       >
-        <CardTitle className="text-sm font-medium flex justify-between items-center">
-          <span>
+        <CardTitle className="text-xs font-medium flex justify-between items-center gap-2">
+          <span className="truncate">
             {showNames ? event.from : event.from_id} → {showNames ? event.to : event.to_id}
           </span>
-          <span className="text-xs text-muted-foreground">{dataMinDate ? dateToDayLabel(event.date, dataMinDate) : event.date}</span>
+          <span className="text-[10px] text-muted-foreground shrink-0">{dataMinDate ? dateToDayLabel(event.date, dataMinDate) : event.date}</span>
         </CardTitle>
-        <div className="flex gap-2 text-xs mt-1">
-          <span className="px-2 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded font-medium">
+        <div className="flex gap-1.5 text-[10px] mt-1">
+          <span className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded font-medium">
             {event.source}
           </span>
           {event.team && (
-            <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded font-medium">
+            <span className="px-1.5 py-0.5 bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded font-medium">
               {event.team}
             </span>
           )}
@@ -363,7 +324,7 @@ function EventCard({
       </CardHeader>
 
       {isExpanded && (
-        <CardContent className="p-4 pt-3 border-t space-y-3">
+        <CardContent className="p-3 pt-2 border-t space-y-2">
           {event.rawItem ? (
             (() => {
               const payload = getPayloadObj(event.rawItem.payload);
@@ -374,22 +335,22 @@ function EventCard({
                     <>
                       {((payload.meetingGoal as string) || event.rawItem.title) && (
                         <div className="bg-muted/50 p-2 rounded">
-                          <div className="text-muted-foreground mb-1 text-xs">Meeting Goal</div>
-                          <div className="font-medium text-sm">
+                          <div className="text-muted-foreground mb-1 text-[10px]">Meeting Goal</div>
+                          <div className="font-medium text-xs">
                             {(payload.meetingGoal as string) || event.rawItem.title || ""}
                           </div>
                         </div>
                       )}
                       {(Boolean(payload.meetingTime) || (Array.isArray(payload.members) && payload.members.length > 0)) ? (
-                        <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="flex gap-2 text-[10px]">
                           {payload.meetingTime ? (
-                            <div className="bg-muted/50 p-2 rounded">
+                            <div className="flex-1 bg-muted/50 p-2 rounded">
                               <div className="text-muted-foreground mb-1">Meeting Time</div>
                               <div className="font-medium">{String(payload.meetingTime)}</div>
                             </div>
                           ) : null}
                           {Array.isArray(payload.members) && payload.members.length > 0 && (
-                            <div className="bg-muted/50 p-2 rounded">
+                            <div className="flex-1 bg-muted/50 p-2 rounded">
                               <div className="text-muted-foreground mb-1">Members</div>
                               <div className="font-medium">{(payload.members as string[]).join("、")}</div>
                             </div>
@@ -399,7 +360,7 @@ function EventCard({
                     </>
                   )}
                   {event.source !== "meeting" && event.rawItem.title && (
-                    <div className="font-medium text-sm">{event.rawItem.title}</div>
+                    <div className="font-medium text-xs">{event.rawItem.title}</div>
                   )}
                   {event.rawItem.content && (
                     <div className="bg-muted/50 p-2 rounded">
@@ -524,13 +485,21 @@ export default function EventDrawer({
     [datasetName, filters]
   );
 
+  const closeChannelView = useCallback(() => {
+    setChannelView(null);
+    setThreadFilter(null);
+    setChannelViewError(null);
+  }, []);
+
   useEffect(() => {
     if (open) {
       setOffset(0);
       setExpandedIds(new Set());
       fetchEvents(0);
+    } else {
+      closeChannelView();
     }
-  }, [open, fetchEvents]);
+  }, [open, fetchEvents, closeChannelView]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
@@ -540,12 +509,6 @@ export default function EventDrawer({
       return next;
     });
   };
-
-  const closeChannelView = useCallback(() => {
-    setChannelView(null);
-    setThreadFilter(null);
-    setChannelViewError(null);
-  }, []);
 
   const openChannelMessages = useCallback(
     (channel: string, scrollToMessageId: string | null = null) => {
@@ -594,23 +557,23 @@ export default function EventDrawer({
     <Sheet open={open} onOpenChange={onOpenChange} modal={false}>
       <SheetContent
         side="left"
-        className="w-full sm:w-[540px] sm:max-w-xl"
+        className="w-full sm:w-[25vw] sm:max-w-none"
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <SheetHeader>
-          <SheetTitle className="flex items-center gap-2">
+          <SheetTitle className="text-sm font-semibold flex items-center gap-2">
             <span>{title}</span>
             {filters.behavior && (
-              <span 
-                className="px-2 py-1 text-xs font-medium rounded text-white"
+              <span
+                className="px-1.5 py-0.5 text-[10px] font-medium rounded text-white"
                 style={{ backgroundColor: getBehaviorColor(filters.behavior) }}
               >
                 {filters.behavior}
               </span>
             )}
           </SheetTitle>
-          <SheetDescription>
+          <SheetDescription className="text-xs">
             {loading ? "Loading..." : `${total} event(s) found`}
           </SheetDescription>
         </SheetHeader>
@@ -667,7 +630,7 @@ export default function EventDrawer({
     {channelView && (
       <div
         className={cn(
-          "fixed top-0 z-40 flex flex-col rounded-r-lg border border-l-0 bg-background shadow-lg sm:left-[540px] sm:right-auto right-4 left-auto overflow-hidden box-border"
+          "fixed top-0 z-40 flex flex-col rounded-r-lg border border-l-0 bg-background shadow-lg sm:left-[25vw] sm:right-auto right-4 left-auto overflow-hidden box-border"
         )}
         style={{
           width: "min(32rem, calc(100vw - 2rem))",
