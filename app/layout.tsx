@@ -18,7 +18,8 @@ export default function RootLayout({
       <body className="antialiased">
         <CopilotKit
           runtimeUrl="/api/copilotkit"
-          showDevConsole={process.env.NEXT_PUBLIC_COPILOTKIT_DEBUG === "true"}
+          publicApiKey="self-hosted"
+          showDevConsole={false}
         >
           {children}
         </CopilotKit>
