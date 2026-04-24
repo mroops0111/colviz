@@ -45,8 +45,9 @@ def _build_agent(model: str) -> Agent[AgentDeps, str]:
 
         Use this FIRST to learn (a) how much activity exists, (b) how it
         distributes over behaviors and Day-N buckets, and (c) which (from_id,
-        to_id, behavior) pairs are active. Then call `get_interaction_events`
-        only for the slices that actually deserve drilling into.
+        to_id, behavior) pairs are active. You MUST follow up with
+        `get_interaction_events` — the summary alone is never a sufficient
+        answer; the analysis happens in the events.
 
         Input parameters (all optional):
         - behavior: filter by one behavior — "awareness", "sharing", "coordination", or "improving". Omit for all.

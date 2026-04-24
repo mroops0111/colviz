@@ -30,8 +30,10 @@ Use these tools to retrieve collaboration data and answer questions.
 
 # Analysis Workflow
 
-1. Call \`getInteractionSummary\` to get the summary of the data.
-2. Call \`getInteractionEvents\` to get the events of the data.
+Mandatory workflow for any analysis:
+
+1. Call \`getInteractionSummary\` to get aggregate counts and scope where to look.
+2. Call \`getInteractionEvents\` to get the raw event stream — **this is where the analysis happens**. Stopping at the summary is not an answer. Fetch all pages if \`total_pages > 1\`.
 3. Save the analysis to disk via \`saveAnalysisReport\`.
 
 # Scope Rules

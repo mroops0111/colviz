@@ -237,7 +237,7 @@ class ApiClient:
         Returns: { events, total, limit, offset, total_pages }
         Events are sorted ascending by datetime.
         """
-        params: dict[str, str] = {"dataset": dataset, "order": "asc"}
+        params: dict[str, str] = {"dataset": dataset, "order": "asc", "limit": "9999"}
         if behavior:
             params["behavior"] = behavior
         if from_id:
@@ -247,7 +247,7 @@ class ApiClient:
         if source:
             params["source"] = source
         if team:
-            params["team"] = team
+            params["teams"] = team
         if start is not None and min_date:
             params["start"] = day_to_iso(start, min_date)
         if end is not None and min_date:
