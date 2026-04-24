@@ -264,7 +264,7 @@ export async function queryListInteractionSummaries(
     select: { id: true },
   });
   if (!dataset) {
-    return { summaries: [], total: 0 };
+    return { summaries: [], pair_count: 0, capped: false };
   }
 
   const where = buildDrilldownWhere(dataset.id, filters);
@@ -309,7 +309,7 @@ export async function queryListInteractionSummaries(
     }
   }
 
-  const behaviorRank = new Map(BEHAVIOR_ORDER.map((b, i) => [b, i]));
+  const behaviorRank = new Map<string, number>(BEHAVIOR_ORDER.map((b, i) => [b, i]));
   const all = Array.from(map.values()).sort((a, b) => {
     const bRank = (behaviorRank.get(a.behavior) ?? 99) - (behaviorRank.get(b.behavior) ?? 99);
     if (bRank !== 0) return bRank;
