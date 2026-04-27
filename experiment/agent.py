@@ -89,37 +89,49 @@ def _build_agent(model: str) -> Agent[AgentDeps, str]:
         offset: int | None = None,
     ) -> str:
         """
-        Raw chronological event stream (ascending) with the actual content.
-        No aggregate counts — for totals / distributions call
-        `get_interaction_summary` first.
+        Chronological event stream grouped by source/channel.
 
-        PREFER scoping by `teams` + `start` + `end` to get one unified time-series
-        for the whole team in a single call — every event row preserves
-        `from_id` / `to_id`, so directional information is not lost. This
-        replaces the legacy pattern of fanning out one call per directed pair,
-        which fragments the timeline.
-
-        Provide `from_id` / `to_id` only when zooming into a specific edge;
-        provide `behavior` only when intentionally narrowing.
+        For Mattermost, this returns the *full conversation* including messages
+        without a behavior tag (`behavior=""`), so you can see whether a quiet
+        period really had no activity or just no annotated activity. Tagged
+        messages keep their behavior label. Sources are NOT interleaved — each
+        conversation thread stays intact.
 
         Input parameters (all optional, but at least one scope filter is recommended):
         - behavior: one of "awareness", "sharing", "coordination", "improving".
+                    Filters tagged events; untagged Mattermost messages have
+                    `behavior=""` and are excluded when this filter is set.
         - from_id: sender member ID (e.g. "M2").
-        - to_id: receiver member ID (e.g. "M3").
-        - teams: comma-separated team IDs to scope the query (e.g. "T2").
-        - source: one of "mattermost", "gitlab", "meeting".
+        - to_id: receiver member ID (e.g. "M3"). NOTE: untagged Mattermost
+                 messages have no recipient and are excluded when set.
+        - teams: comma-separated team IDs (e.g. "T1,T2,S1"). For Mattermost,
+                 channels are mapped to their primary team via tagged
+                 interactions, so the filter pulls in whole conversations
+                 (including untagged chat) that belong to those teams.
+        - source: one of "mattermost", "gitlab", "meeting". Omit for all.
         - start / end: Day-N range (inclusive).
-        - offset: pagination offset (default 0, page size 50).
 
         Output fields per event record:
         - datetime: "Day N HH:MM:SS" anonymized timestamp
-        - behavior, source, scope ("intra"/"inter"), team_id
-        - from_id, to_id, weight
-        - title, content, payload: raw source content (when available)
+        - behavior ("" if untagged), source, scope
+        - team_id: real team actor key (T1/T2/.../S1/...) — never a channel name
+        - channel: mattermost channel name (only present for source=="mattermost")
+        - from_id, to_id ("" if no recipient), weight
+        - title, content, payload: raw source content (when available). For
+          mattermost, payload omits `channel`/`category`/`scope` since they
+          duplicate the top-level fields.
 
-        Response envelope: { events, total, limit, offset, total_pages }
-        Events are sorted ascending by datetime. Fetch subsequent pages by
-        incrementing offset by 50.
+        Response envelope:
+            {
+              "channels": { "<channel name>": [...], ... },  # mattermost by channel
+              "gitlab":   [...],
+              "meeting":  [...],
+              "total":    int
+            }
+        Mattermost is grouped by channel name (e.g. "Leader Team", "Profile")
+        so each conversation thread stays intact. Each event still carries a
+        team_id for cross-team analysis. Events within each list are sorted
+        ascending by datetime.
         """
         result = await ctx.deps.api.get_interaction_events(
             ctx.deps.dataset,

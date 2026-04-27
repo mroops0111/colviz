@@ -1,13 +1,18 @@
 import { NextResponse } from "next/server";
 import { calcTotalPages, parseOptionalDate, parseSingleOrCsvList } from "@/lib/api-utils";
-import { queryEdgeEvents } from "@/lib/copilotQueries";
+import { queryEdgeEvents, queryRawChannelEvents } from "@/lib/copilotQueries";
 
 export const runtime = "nodejs";
 
 /** GET /api/drilldown - Accepts singular (team, source) or plural (teams, sources) query params.
  *
- * Optional query param (used by the AI tool layer; UI callers can ignore):
+ * Optional query params (used by the AI tool layer; UI callers can ignore):
  * - order=asc|desc (default desc)  — chronological direction of events
+ * - include_untagged=true          — Mattermost-only: query the raw message
+ *   stream so messages without a behavior tag are included. Untagged rows have
+ *   `behavior`, `to_id`/`to`, and (sometimes) `team_id`/`team` set to "" since
+ *   raw messages have no recipient. UI / charts MUST NOT pass this flag —
+ *   it's intended for AI-side context recovery (mid-conversation gaps).
  *
  * Aggregate stats (counts / breakdowns) live on /api/interaction-summary; this
  * endpoint is purely for the raw event stream.
@@ -42,22 +47,25 @@ export async function GET(request: Request) {
   const order: "asc" | "desc" =
     url.searchParams.get("order")?.trim().toLowerCase() === "asc" ? "asc" : "desc";
 
-  const { events, total } = await queryEdgeEvents(
-    datasetName,
-    {
-      dataset: datasetName,
-      behavior,
-      from_id,
-      to_id,
-      sources: sources.length > 0 ? sources : undefined,
-      teams: teams.length > 0 ? teams : undefined,
-      start: start?.toISOString(),
-      end: end?.toISOString(),
-    },
-    limit,
-    offset,
-    order
-  );
+  const includeUntagged =
+    url.searchParams.get("include_untagged")?.trim().toLowerCase() === "true";
+  const useRawMattermost =
+    includeUntagged && sources.length === 1 && sources[0] === "mattermost";
+
+  const filters = {
+    dataset: datasetName,
+    behavior,
+    from_id,
+    to_id,
+    sources: sources.length > 0 ? sources : undefined,
+    teams: teams.length > 0 ? teams : undefined,
+    start: start?.toISOString(),
+    end: end?.toISOString(),
+  };
+
+  const { events, total } = useRawMattermost
+    ? await queryRawChannelEvents(datasetName, filters, limit, offset, order)
+    : await queryEdgeEvents(datasetName, filters, limit, offset, order);
 
   return NextResponse.json({
     dataset: datasetName,
