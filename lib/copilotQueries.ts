@@ -173,6 +173,194 @@ export async function queryEdgeEvents(
 }
 
 /**
+ * Extract a single behavior label from a payload `category` string (best effort).
+ * Returns "" if no known behavior is present (untagged message).
+ */
+function extractBehaviorFromCategory(category: unknown): string {
+  if (typeof category !== "string") return "";
+  const lower = category.toLowerCase();
+  for (const b of BEHAVIOR_ORDER) {
+    if (lower.includes(b)) return b;
+  }
+  if (lower.includes("collaboration")) return "improving";
+  return "";
+}
+
+/**
+ * Mattermost-only: query the raw message stream from RawItem so we include
+ * messages without a behavior tag (which never enter the Interaction table).
+ *
+ * Returns events shaped like DrilldownEventRecord. For untagged rows
+ * `behavior` is "" (extracted best-effort from payload.category) and
+ * `to_id`/`to` are "" (raw messages have no recipient). `team_id`/`team` come
+ * from the rawItem's own Interaction when one exists, otherwise from the
+ * channel's primary team derived from tagged interactions in the same date
+ * range — so team_id is always a real actor key (T1/S1/...) when the channel
+ * has any tagged activity, never a channel name.
+ *
+ * Opt-in via `include_untagged=true`. UI / charts do not opt in.
+ */
+export async function queryRawChannelEvents(
+  datasetName: string,
+  filters: EdgeQueryFilters,
+  limit: number = 50,
+  offset: number = 0,
+  order: "asc" | "desc" = "desc"
+): Promise<{ events: DrilldownEventRecord[]; total: number }> {
+  const dataset = await prisma.dataset.findUnique({
+    where: { name: datasetName },
+    select: { id: true },
+  });
+  if (!dataset) {
+    return { events: [], total: 0 };
+  }
+
+  const resolvedFrom = filters.from_id
+    ? await resolveActorKey(dataset.id, filters.from_id)
+    : null;
+
+  const start = parseOptionalDate(filters.start ?? null);
+  const end = parseOptionalDate(filters.end ?? null);
+  const teams = parseCsvList(filters.teams);
+
+  const occurredAtFilter: { gte?: Date; lte?: Date } = {};
+  if (start) occurredAtFilter.gte = start;
+  if (end) occurredAtFilter.lte = end;
+
+  // Build channel → primary team mapping from tagged interactions in the date
+  // range. We use this for two things:
+  //   (1) when `teams` is set, restrict to channels whose tagged interactions
+  //       touch one of those teams (the channel becomes the unit of relevance,
+  //       not the author — author-based filtering pulled in cross-stage chatter
+  //       in unrelated channels)
+  //   (2) assign team_id to untagged events whose RawItem has no Interaction
+  //       row (so team_id is always a real actor key like T1/S1, never a
+  //       channel name)
+  type TeamInfo = { actorKey: string; name: string };
+  const taggedRows = await prisma.interaction.findMany({
+    where: {
+      datasetId: dataset.id,
+      source: { key: "mattermost" },
+      ...(Object.keys(occurredAtFilter).length > 0
+        ? { occurredAt: occurredAtFilter }
+        : {}),
+      team: { isNot: null },
+      rawItem: { isNot: null },
+    },
+    select: {
+      team: { select: { actorKey: true, name: true } },
+      rawItem: { select: { payloadJson: true } },
+    },
+  });
+  const channelTeamCounts = new Map<string, Map<string, { team: TeamInfo; count: number }>>();
+  for (const row of taggedRows) {
+    const payload = parsePayloadJson(row.rawItem?.payloadJson ?? null);
+    const channel = payload && typeof payload.channel === "string" ? payload.channel : "";
+    const team = row.team;
+    if (!channel || !team) continue;
+    if (!channelTeamCounts.has(channel)) channelTeamCounts.set(channel, new Map());
+    const inner = channelTeamCounts.get(channel)!;
+    const existing = inner.get(team.actorKey);
+    if (existing) existing.count += 1;
+    else inner.set(team.actorKey, { team: { actorKey: team.actorKey, name: team.name }, count: 1 });
+  }
+  const channelPrimary = new Map<string, TeamInfo>();
+  for (const [channel, counts] of channelTeamCounts) {
+    const sorted = [...counts.values()].sort((a, b) => b.count - a.count);
+    if (teams.length > 0) {
+      const match = sorted.find((c) => teams.includes(c.team.actorKey));
+      if (match) channelPrimary.set(channel, match.team);
+    } else if (sorted.length > 0) {
+      channelPrimary.set(channel, sorted[0].team);
+    }
+  }
+  if (teams.length > 0 && channelPrimary.size === 0) {
+    return { events: [], total: 0 };
+  }
+
+  const where: Prisma.RawItemWhereInput = {
+    datasetId: dataset.id,
+    sourceItemType: "mattermost_message",
+    source: { key: "mattermost" },
+    ...(Object.keys(occurredAtFilter).length > 0
+      ? { occurredAt: occurredAtFilter }
+      : {}),
+    ...(filters.from_id
+      ? { authorActor: { actorKey: resolvedFrom ?? filters.from_id } }
+      : {}),
+  };
+
+  // Channel filter lives in payloadJson, which Prisma can't filter on for
+  // SQLite. Fetch all matching raw items, then filter & slice in memory. The
+  // dataset is small enough (a few thousand rows max) that this is fine.
+  const allRawItems = await prisma.rawItem.findMany({
+    where,
+    orderBy: { occurredAt: order },
+    include: {
+      source: true,
+      authorActor: true,
+      interactions: {
+        take: 1,
+        select: { team: { select: { actorKey: true, name: true } } },
+      },
+    },
+  });
+
+  const wantBehavior = filters.behavior;
+  const wantToId = filters.to_id;
+  const matched: DrilldownEventRecord[] = [];
+
+  for (const r of allRawItems) {
+    const payload = parsePayloadJson(r.payloadJson);
+    const channel =
+      payload && typeof payload.channel === "string" ? payload.channel : "";
+    const scope =
+      payload && typeof payload.scope === "string" ? payload.scope : "";
+    const behavior = extractBehaviorFromCategory(payload?.category);
+
+    if (teams.length > 0 && !channelPrimary.has(channel)) continue;
+    if (wantBehavior && behavior !== wantBehavior) continue;
+    // RawItem has no recipient — if caller insists on a to_id, drop the row.
+    if (wantToId) continue;
+
+    // Prefer the actual tagged team for this rawItem; fall back to the
+    // channel's primary team for untagged messages.
+    const taggedTeam = r.interactions[0]?.team ?? null;
+    const primary = channelPrimary.get(channel);
+    const teamInfo = taggedTeam ?? primary ?? null;
+
+    matched.push({
+      id: r.id,
+      datetime: (r.occurredAt ?? new Date(0)).toISOString(),
+      date: (r.occurredAt ?? new Date(0)).toISOString().slice(0, 10),
+      source: r.source.key,
+      scope,
+      team_id: teamInfo?.actorKey ?? "",
+      team: teamInfo?.name ?? "",
+      behavior,
+      from_id: r.authorActor?.actorKey ?? "",
+      from: r.authorActor?.name ?? "",
+      to_id: "",
+      to: "",
+      weight: 1,
+      rawItem: {
+        id: r.id,
+        sourceItemType: r.sourceItemType,
+        sourceItemId: r.sourceItemId,
+        title: r.title,
+        content: r.contentText ?? "",
+        contentFormat: r.contentFormat ?? "plain",
+        payload,
+      },
+    });
+  }
+
+  const total = matched.length;
+  const events = matched.slice(offset, offset + limit);
+  return { events, total };
+}
+
+/**
  * Aggregate stats for the *entire* filtered set (across all pages).
  *
  * Owns *all* aggregate views the AI gets: how many events total, how they

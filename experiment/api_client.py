@@ -63,6 +63,11 @@ _PAYLOAD_DROP_KEYS = frozenset({"rowIndex", "datetime", "team", "teams"})
 # Meeting-specific keys that duplicate title/content or contain raw names.
 _MEETING_DROP_SUFFIXES = ("-intra", "-inter", "-subject", "-description")
 _MEETING_DROP_KEYS = frozenset({"meetingGoal"})
+# Mattermost-specific keys to drop:
+#   - channel: lifted to the top-level `channel` field (also the channels-dict key)
+#   - category: same info as top-level `behavior` (e.g. "Sharing" → "sharing")
+#   - scope: same info as top-level `scope`
+_MATTERMOST_DROP_KEYS = frozenset({"channel", "category", "scope"})
 
 
 def _should_drop_meeting_key(k: str) -> bool:
@@ -77,15 +82,19 @@ def _anonymize_summary(s: dict) -> dict:
 def _clean_payload(payload: dict, ctx: "DatasetContext", source: str = "") -> dict:
     """Replace real names inside payload's name-bearing keys with actor IDs.
     Drops empty-string values, internal metadata keys (rowIndex, datetime),
-    and meeting-specific keys that duplicate title/content (*-intra, *-inter,
-    *-subject, *-description, meetingGoal).
+    meeting-specific keys that duplicate title/content (*-intra, *-inter,
+    *-subject, *-description, meetingGoal), and mattermost-specific keys that
+    duplicate top-level fields (channel, category, scope).
     """
     is_meeting = source == "meeting"
+    is_mattermost = source == "mattermost"
     clean: dict = {}
     for k, v in payload.items():
         if k in _PAYLOAD_DROP_KEYS or v == "":
             continue
         if is_meeting and _should_drop_meeting_key(k):
+            continue
+        if is_mattermost and k in _MATTERMOST_DROP_KEYS:
             continue
         if k in _PAYLOAD_NAME_KEYS:
             if isinstance(v, list):
@@ -124,6 +133,13 @@ def _slim_event(e: dict, min_date: str | None, ctx: "DatasetContext") -> dict:
             slim["content"] = raw_item["content"]
         payload = raw_item.get("payload")
         if isinstance(payload, dict):
+            # Lift mattermost channel to top level so the Python client can
+            # group by it without re-reading payload (and so the payload itself
+            # can drop the now-redundant channel key).
+            if e.get("source") == "mattermost":
+                ch = payload.get("channel")
+                if isinstance(ch, str) and ch:
+                    slim["channel"] = ch
             clean = _clean_payload(payload, ctx, source=e.get("source", ""))
             if clean:
                 slim["payload"] = clean
@@ -229,41 +245,92 @@ class ApiClient:
         team: str | None = None,
         offset: int | None = None,
     ) -> dict:
-        """GET /api/drilldown
+        """GET /api/drilldown — events grouped by source/channel.
 
-        Pure event stream — no aggregates. For totals / breakdowns call
-        `get_interaction_summary` first.
+        For Mattermost, this includes *untagged* messages (raw conversation)
+        via include_untagged=true so the AI sees full context — not just
+        behavior-tagged events. Tagged messages keep their behavior label;
+        untagged ones surface as `behavior=""`.
 
-        Returns: { events, total, limit, offset, total_pages }
-        Events are sorted ascending by datetime.
+        Response shape:
+          {
+            "channels": { "<channel name>": [...], ... },  # mattermost
+            "gitlab":   [...],
+            "meeting":  [...],
+            "total":    int
+          }
+
+        Mattermost is grouped by channel name (e.g. "Leader Team") so each
+        thread stays intact; each event still carries a real team_id (T1/S1/...)
+        for cross-team analysis. Within each list events are ascending by
+        datetime; sources are not interleaved.
         """
-        params: dict[str, str] = {"dataset": dataset, "order": "asc", "limit": "9999"}
-        if behavior:
-            params["behavior"] = behavior
-        if from_id:
-            params["from_id"] = from_id
-        if to_id:
-            params["to_id"] = to_id
-        if source:
-            params["source"] = source
-        if team:
-            params["teams"] = team
-        if start is not None and min_date:
-            params["start"] = day_to_iso(start, min_date)
-        if end is not None and min_date:
-            params["end"] = day_to_iso(end, min_date)
-        if offset is not None:
-            params["offset"] = str(offset)
+        # Decide which (source, include_untagged) pairs to fetch.
+        if source == "mattermost":
+            plan = [("mattermost", True)]
+        elif source in ("gitlab", "meeting"):
+            plan = [(source, False)]
+        elif source is None:
+            plan = [("mattermost", True), ("gitlab", False), ("meeting", False)]
+        else:
+            plan = [(source, False)]
 
         ctx = await self._get_context(dataset)
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(f"{self.base_url}/api/drilldown", params=params)
-            r.raise_for_status()
-            data = r.json()
+        events_with_iso: list[tuple[str, dict]] = []  # (raw_iso, slim_event)
+        total = 0
 
-        events = [_slim_event(e, min_date, ctx) for e in data.get("events", [])]
-        result: dict = {"events": events}
-        for k in ("total", "limit", "offset", "total_pages"):
-            if k in data:
-                result[k] = data[k]
-        return result
+        async with httpx.AsyncClient(timeout=30) as client:
+            for src, include_untagged in plan:
+                params: dict[str, str] = {
+                    "dataset": dataset, "order": "asc", "limit": "9999", "source": src,
+                }
+                if behavior:
+                    params["behavior"] = behavior
+                if from_id:
+                    params["from_id"] = from_id
+                if to_id:
+                    params["to_id"] = to_id
+                if team:
+                    params["teams"] = team
+                if start is not None and min_date:
+                    params["start"] = day_to_iso(start, min_date)
+                if end is not None and min_date:
+                    params["end"] = day_to_iso(end, min_date)
+                if offset is not None:
+                    params["offset"] = str(offset)
+                if include_untagged:
+                    params["include_untagged"] = "true"
+
+                r = await client.get(f"{self.base_url}/api/drilldown", params=params)
+                r.raise_for_status()
+                data = r.json()
+                total += int(data.get("total", 0))
+                for e in data.get("events", []):
+                    raw_iso = e.get("datetime", "") if isinstance(e.get("datetime"), str) else ""
+                    events_with_iso.append((raw_iso, _slim_event(e, min_date, ctx)))
+
+        # Group by source / channel; preserve chronological order within each group.
+        events_with_iso.sort(key=lambda pair: pair[0])
+
+        channels: dict[str, list[dict]] = {}
+        gitlab_events: list[dict] = []
+        meeting_events: list[dict] = []
+        for _, ev in events_with_iso:
+            src = ev.get("source")
+            if src == "mattermost":
+                # Mattermost is grouped by channel name (the conversation
+                # thread). team_id stays as a real actor key (T1/S1/...) on
+                # each event for analytical filtering.
+                ch = ev.get("channel") or "_unknown"
+                channels.setdefault(ch, []).append(ev)
+            elif src == "gitlab":
+                gitlab_events.append(ev)
+            elif src == "meeting":
+                meeting_events.append(ev)
+
+        return {
+            "channels": channels,
+            "gitlab": gitlab_events,
+            "meeting": meeting_events,
+            "total": total,
+        }
